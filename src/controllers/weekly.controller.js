@@ -53,8 +53,9 @@ exports.markWeekPaid = async (req, res) => {
     const { memberId, weekNumber } = req.body;
 
     const cycle = await PujaCycle.findOne({ isActive: true });
-    if (!cycle) {
-      return res.status(404).json({ message: "No active cycle" });
+    console.log("Active cycle:", cycle);
+    if (cycle.isClosed) {
+      return res.status(403).json({ message: "Year is closed. No changes allowed." });
     }
 
     const record = await WeeklyPayment.findOne({
@@ -89,8 +90,8 @@ exports.undoWeekPaid = async (req, res) => {
     const { memberId, weekNumber } = req.body;
 
     const cycle = await PujaCycle.findOne({ isActive: true });
-    if (!cycle) {
-      return res.status(404).json({ message: "No active cycle" });
+    if (!cycle || cycle.isClosed) {
+      return res.status(404).json({ message: "Year is closed. No changes allowed." });
     }
 
     const record = await WeeklyPayment.findOne({

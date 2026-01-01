@@ -3,272 +3,268 @@ const PujaContribution = require("../models/PujaContribution");
 const Donation = require("../models/Donation");
 const Expense = require("../models/Expense");
 const PujaCycle = require("../models/PujaCycle");
+const mongoose = require("mongoose");
 
-/* ================= SUMMARY (WITH CARRY FORWARD) ================= */
-exports.yearSummary = async (req, res) => {
+/* =====================================================
+   LIST ALL CYCLES (FOR HISTORY PAGE)
+   ===================================================== */
+exports.listCycles = async (req, res) => {
   try {
-    const year = Number(req.params.year);
+    const cycles = await PujaCycle.find()
+      .sort({ startDate: -1 })
+      .select("name startDate endDate isClosed");
 
-    const yearStart = new Date(`${year}-01-01`);
-    const yearEnd = new Date(`${year}-12-31T23:59:59`);
+    res.json({ success: true, data: cycles });
+  } catch (err) {
+    console.error("List cycles error:", err);
+    res.status(500).json({ message: "Failed to load cycles" });
+  }
+};
 
-    /* ===== OPENING BALANCE ===== */
-    const prevWeekly = await WeeklyPayment.aggregate([
+/* =====================================================
+   SUMMARY (SINGLE CYCLE)
+   ===================================================== */
+exports.cycleSummary = async (req, res) => {
+  try {
+    const { cycleId } = req.params;
+    const cycle = await PujaCycle.findById(cycleId);
+
+    if (!cycle) {
+      return res.status(404).json({ message: "Cycle not found" });
+    }
+
+    /* ===== WEEKLY ===== */
+    const weekly = await WeeklyPayment.aggregate([
+      { $match: { cycle: cycle._id } },
       { $unwind: "$weeks" },
-      {
-        $match: {
-          "weeks.paid": true,
-          "weeks.paidAt": { $lt: yearStart },
-        },
-      },
-      {
-        $lookup: {
-          from: "pujacycles",
-          localField: "cycle",
-          foreignField: "_id",
-          as: "cycle",
-        },
-      },
-      { $unwind: "$cycle" },
-
-      // 🔥 ADD THIS
-      {
-        $project: {
-          amount: { $toDouble: "$cycle.weeklyAmount" },
-        },
-      },
-
+      { $match: { "weeks.paid": true } },
       {
         $group: {
           _id: null,
-          total: { $sum: "$amount" },
+          total: { $sum: cycle.weeklyAmount },
         },
       },
     ]);
 
-
-    const prevPuja = await PujaContribution.aggregate([
-      { $match: { createdAt: { $lt: yearStart } } },
+    /* ===== PUJA ===== */
+    const puja = await PujaContribution.aggregate([
+      { $match: { cycle: cycle._id } },
       { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
 
-    const prevDonations = await Donation.aggregate([
-      { $match: { createdAt: { $lt: yearStart } } },
+    /* ===== DONATIONS ===== */
+    const donations = await Donation.aggregate([
+      { $match: { cycle: cycle._id } },
       { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
 
-    const prevExpenses = await Expense.aggregate([
+    /* ===== EXPENSES ===== */
+    const expensesAgg = await Expense.aggregate([
       {
         $match: {
+          cycle: cycle._id,
           status: "approved",
-          createdAt: { $lt: yearStart },
-        },
-      },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]);
-
-    const openingBalance =
-      (prevWeekly[0]?.total || 0) +
-      (prevPuja[0]?.total || 0) +
-      (prevDonations[0]?.total || 0) -
-      (prevExpenses[0]?.total || 0);
-
-    /* ===== CURRENT YEAR ===== */
-    const weeklyTotal = await WeeklyPayment.aggregate([
-      { $unwind: "$weeks" },
-      {
-        $match: {
-          "weeks.paid": true,
-          "weeks.paidAt": { $gte: yearStart, $lte: yearEnd },
-        },
-      },
-      {
-        $lookup: {
-          from: "pujacycles",
-          localField: "cycle",
-          foreignField: "_id",
-          as: "cycle",
-        },
-      },
-      { $unwind: "$cycle" },
-
-      // 🔥 SAME FIX
-      {
-        $project: {
-          amount: { $toDouble: "$cycle.weeklyAmount" },
-        },
-      },
-
-      {
-        $group: {
-          _id: null,
-          total: { $sum: "$amount" },
-        },
-      },
-    ]);
-
-    const pujaTotal = await PujaContribution.aggregate([
-      { $match: { createdAt: { $gte: yearStart, $lte: yearEnd } } },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]);
-
-    const donationTotal = await Donation.aggregate([
-      { $match: { createdAt: { $gte: yearStart, $lte: yearEnd } } },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]);
-
-    const expenseTotal = await Expense.aggregate([
-      {
-        $match: {
-          status: "approved",
-          createdAt: { $gte: yearStart, $lte: yearEnd },
         },
       },
       { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
 
     const collections =
-      (weeklyTotal[0]?.total || 0) +
-      (pujaTotal[0]?.total || 0) +
-      (donationTotal[0]?.total || 0);
+      (weekly[0]?.total || 0) +
+      (puja[0]?.total || 0) +
+      (donations[0]?.total || 0);
 
-    const expenses = expenseTotal[0]?.total || 0;
+    const expenses = expensesAgg[0]?.total || 0;
 
     res.json({
       success: true,
       data: {
-        openingBalance,
+        openingBalance: cycle.openingBalance || 0,
+        weeklyTotal: weekly[0]?.total || 0,
+        pujaTotal: puja[0]?.total || 0,
+        donationTotal: donations[0]?.total || 0,
         collections,
         expenses,
-        closingBalance: openingBalance + collections - expenses,
+        closingBalance:
+          (cycle.openingBalance || 0) + collections - expenses,
+        isClosed: cycle.isClosed,
       },
     });
   } catch (err) {
-    console.error("History summary error:", err);
-    res.status(500).json({ message: "History summary failed" });
+    console.error("Cycle summary error:", err);
+    res.status(500).json({ message: "Summary failed" });
   }
 };
 
-/* ================= WEEKLY (PER MEMBER TOTAL) ================= */
+/* =====================================================
+   WEEKLY – PER MEMBER TOTAL
+   ===================================================== */
 exports.weekly = async (req, res) => {
-  const year = Number(req.params.year);
+  try {
+    const { cycleId } = req.params;
 
-  const start = new Date(`${year}-01-01`);
-  const end = new Date(`${year}-12-31T23:59:59`);
+    const cycle = await PujaCycle.findById(cycleId).lean();
+    if (!cycle) return res.json({ success: true, data: [] });
 
-  const rows = await WeeklyPayment.aggregate([
-    { $unwind: "$weeks" },
-    {
-      $match: {
-        "weeks.paid": true,
-        "weeks.paidAt": { $gte: start, $lte: end },
-      },
-    },
-    {
-      $lookup: {
-        from: "pujacycles",
-        localField: "cycle",
-        foreignField: "_id",
-        as: "cycle",
-      },
-    },
-    { $unwind: "$cycle" },
-    {
-      $lookup: {
-        from: "users",
-        localField: "member",
-        foreignField: "_id",
-        as: "member",
-      },
-    },
-    { $unwind: "$member" },
-    {
-      $group: {
-        _id: "$member._id",
-        memberName: { $first: "$member.name" },
-        total: { $sum: "$cycle.weeklyAmount" },
-      },
-    },
-    { $sort: { memberName: 1 } },
-  ]);
+    const weeklyAmount = Number(cycle.weeklyAmount) || 0;
 
-  res.json({ success: true, data: rows });
+    const rows = await WeeklyPayment.aggregate([
+      { $match: { cycle: cycle._id } },
+      { $unwind: "$weeks" },
+      { $match: { "weeks.paid": true } },
+
+      {
+        $lookup: {
+          from: "users",
+          localField: "member",
+          foreignField: "_id",
+          as: "member",
+        },
+      },
+      { $unwind: "$member" },
+
+      // ✅ inject weeklyAmount safely
+      {
+        $addFields: {
+          amount: weeklyAmount,
+        },
+      },
+
+      {
+        $group: {
+          _id: "$member._id",
+          memberName: { $first: "$member.name" },
+          total: { $sum: "$amount" },
+        },
+      },
+
+      { $sort: { memberName: 1 } },
+    ]);
+
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error("History weekly error:", err);
+    res.status(500).json({ message: "Weekly history failed" });
+  }
 };
 
-/* ================= PUJA (PER MEMBER TOTAL) ================= */
+
+/* =====================================================
+   PUJA – PER MEMBER TOTAL
+   ===================================================== */
 exports.puja = async (req, res) => {
-  const year = Number(req.params.year);
+  try {
+    const { cycleId } = req.params;
 
-  const start = new Date(`${year}-01-01`);
-  const end = new Date(`${year}-12-31T23:59:59`);
+    const rows = await PujaContribution.aggregate([
+      {
+        $match: {
+          cycle: new mongoose.Types.ObjectId(cycleId),
+        },
+      },
+      {
+        $lookup: {
+          from: "users",
+          localField: "member",
+          foreignField: "_id",
+          as: "member",
+        },
+      },
+      { $unwind: "$member" },
+      {
+        $group: {
+          _id: "$member._id",
+          memberName: { $first: "$member.name" },
+          total: { $sum: "$amount" },
+        },
+      },
+      { $sort: { memberName: 1 } },
+    ]);
 
-  const rows = await PujaContribution.aggregate([
-    {
-      $match: {
-        createdAt: { $gte: start, $lte: end },
-      },
-    },
-    {
-      $lookup: {
-        from: "users",
-        localField: "member",
-        foreignField: "_id",
-        as: "member",
-      },
-    },
-    { $unwind: "$member" },
-    {
-      $group: {
-        _id: "$member._id",
-        memberName: { $first: "$member.name" },
-        total: { $sum: "$amount" },
-      },
-    },
-    { $sort: { memberName: 1 } },
-  ]);
-
-  res.json({ success: true, data: rows });
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error("History puja error:", err);
+    res.status(500).json({ message: "Puja history failed" });
+  }
 };
 
-/* ================= DONATIONS ================= */
+
+/* =====================================================
+   DONATIONS – LIST
+   ===================================================== */
 exports.donations = async (req, res) => {
-  const year = Number(req.params.year);
+  try {
+    const { cycleId } = req.params;
 
-  const rows = await Donation.find({
-    createdAt: {
-      $gte: new Date(`${year}-01-01`),
-      $lte: new Date(`${year}-12-31`),
-    },
-  });
+    const rows = await Donation.find({ cycle: cycleId })
+      .sort({ createdAt: 1 })
+      .lean();
 
-  res.json({
-    success: true,
-    data: rows.map((r) => ({
-      donorName: r.donorName,
-      amount: r.amount,
-      date: r.createdAt.toISOString().slice(0, 10),
-    })),
-  });
+    res.json({
+      success: true,
+      data: rows.map((d) => ({
+        donorName: d.donorName,
+        amount: d.amount,
+        date: d.createdAt.toISOString().slice(0, 10),
+      })),
+    });
+  } catch (err) {
+    console.error("Donation history error:", err);
+    res.status(500).json({ message: "Donation history failed" });
+  }
 };
 
-/* ================= EXPENSES ================= */
+/* =====================================================
+   EXPENSES – LIST
+   ===================================================== */
 exports.expenses = async (req, res) => {
-  const year = Number(req.params.year);
+  try {
+    const { cycleId } = req.params;
 
-  const rows = await Expense.find({
-    status: "approved",
-    createdAt: {
-      $gte: new Date(`${year}-01-01`),
-      $lte: new Date(`${year}-12-31`),
-    },
-  });
+    const rows = await Expense.find({
+      cycle: cycleId,
+      status: "approved",
+    })
+      .sort({ createdAt: 1 })
+      .lean();
 
-  res.json({
-    success: true,
-    data: rows.map((r) => ({
-      title: r.title,
-      amount: r.amount,
-      date: r.createdAt.toISOString().slice(0, 10),
-    })),
-  });
+    res.json({
+      success: true,
+      data: rows.map((e) => ({
+        title: e.title,
+        amount: e.amount,
+        date: e.createdAt.toISOString().slice(0, 10),
+      })),
+    });
+  } catch (err) {
+    console.error("Expense history error:", err);
+    res.status(500).json({ message: "Expense history failed" });
+  }
+};
+
+/* =====================================================
+   CLOSE CYCLE (ADMIN)
+   ===================================================== */
+exports.closeCycle = async (req, res) => {
+  try {
+    const { cycleId } = req.params;
+
+    const cycle = await PujaCycle.findById(cycleId);
+    if (!cycle) {
+      return res.status(404).json({ message: "Cycle not found" });
+    }
+
+    if (cycle.isClosed) {
+      return res.status(400).json({ message: "Cycle already closed" });
+    }
+
+    cycle.isClosed = true;
+    cycle.closedAt = new Date();
+    await cycle.save();
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Close cycle error:", err);
+    res.status(500).json({ message: "Close cycle failed" });
+  }
 };

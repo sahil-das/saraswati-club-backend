@@ -7,10 +7,8 @@ exports.list = async (req, res) => {
   if (!cycle) return res.json({ success: true, data: [] });
 
   const donations = await Donation.find({
-    createdAt: {
-      $gte: cycle.startDate,
-      $lte: cycle.endDate,
-    },
+ 
+    cycle: cycle._id,
   })
     .populate("addedBy", "name email")
     .sort({ createdAt: -1 });
@@ -25,9 +23,19 @@ exports.create = async (req, res) => {
     return res.status(400).json({ message: "All fields required" });
   }
 
+  const cycle = await PujaCycle.findOne({ isActive: true });
+
+    // 🔒 Prevent edits to closed year
+  if (!cycle || cycle.isClosed) {
+    return res.status(403).json({
+      message: "This year is closed. Cannot add donation.",
+    });
+  }
+
   const donation = await Donation.create({
     donorName,
     amount,
+    cycle: cycle._id,
     addedBy: req.user._id,
   });
 

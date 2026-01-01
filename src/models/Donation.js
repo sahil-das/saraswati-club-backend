@@ -11,6 +11,11 @@ const donationSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    cycle: {                      // ✅ THIS IS REQUIRED
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PujaCycle",
+      required: true,
+    },
     addedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

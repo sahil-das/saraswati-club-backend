@@ -11,10 +11,7 @@ exports.list = async (req, res) => {
     }
 
     const data = await PujaContribution.find({
-      createdAt: {
-        $gte: new Date(cycle.startDate  ),
-        $lte: new Date(cycle.endDate),
-      },
+      cycle: cycle._id,
     })  
       .populate("member", "name email")
       .populate("addedBy", "name email")
@@ -39,10 +36,7 @@ exports.memberTotal = async (req, res) => {
 
     const rows = await PujaContribution.find({
       member: memberId,
-      createdAt: {
-        $gte: new Date(cycle.startDate),
-        $lte: new Date(cycle.endDate),
-      },
+      cycle: cycle._id,
     }).sort({ createdAt: -1 });
 
     const total = rows.reduce((sum, r) => sum + r.amount, 0);
@@ -106,7 +100,7 @@ exports.create = async (req, res) => {
     }
 
     // 🔒 Prevent edits to closed year
-    if (cycle.isClosed) {
+    if (!cycle || cycle.isClosed) {
       return res.status(403).json({
         message: "This year is closed. Cannot add contribution.",
       });

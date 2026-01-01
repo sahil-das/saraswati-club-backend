@@ -32,7 +32,7 @@ exports.pujaTotal = async (req, res) => {
   if (!cycle) return res.json({ total: 0 });
 
   const r = await PujaContribution.aggregate([
-    { $match: { createdAt: { $gte: cycle.startDate, $lte: cycle.endDate } } },
+    { $match: { cycle: cycle._id} },
     { $group: { _id: null, total: { $sum: "$amount" } } }
   ]);
 
@@ -45,7 +45,7 @@ exports.donationTotal = async (req, res) => {
   if (!cycle) return res.json({ total: 0 });
 
   const r = await Donation.aggregate([
-    { $match: { createdAt: { $gte: cycle.startDate, $lte: cycle.endDate } } },
+    { $match: { cycle: cycle._id} },
     { $group: { _id: null, total: { $sum: "$amount" } } }
   ]);
 
@@ -61,7 +61,7 @@ exports.expenseTotal = async (req, res) => {
     {
       $match: {
         status: "approved",
-        createdAt: { $gte: cycle.startDate, $lte: cycle.endDate }
+        cycle: cycle._id
       }
     },
     { $group: { _id: null, total: { $sum: "$amount" } } }

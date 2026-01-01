@@ -95,3 +95,30 @@ exports.getYears = async (req, res) => {
     res.status(500).json({ message: "Failed to load years" });
   }
 };
+exports.closeCycle = async (req, res) => {
+  try {
+    const cycle = await PujaCycle.findById(req.params.id);
+
+    if (!cycle) {
+      return res.status(404).json({ message: "Cycle not found" });
+    }
+
+    if (cycle.isClosed) {
+      return res.status(400).json({ message: "Cycle already closed" });
+    }
+
+    cycle.isActive = false;
+    cycle.isClosed = true;
+
+    await cycle.save();
+
+    res.json({
+      success: true,
+      message: "Year closed successfully",
+      data: cycle,
+    });
+  } catch (err) {
+    console.error("Close cycle error", err);
+    res.status(500).json({ message: "Failed to close cycle" });
+  }
+};

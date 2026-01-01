@@ -7,10 +7,7 @@ exports.list = async (req, res) => {
   if (!cycle) return res.json({ success: true, data: [] });
 
   const expenses = await Expense.find({
-    createdAt: {
-      $gte: cycle.startDate,
-      $lte: cycle.endDate,
-    },
+    cycle: cycle._id,
   }).sort({ createdAt: -1 });
 
   res.json({ success: true, data: expenses });
@@ -23,9 +20,18 @@ exports.create = async (req, res) => {
     return res.status(400).json({ message: "Missing fields" });
   }
 
+  const cycle = await PujaCycle.findOne({ isActive: true });
+
+      // 🔒 Prevent edits to closed year
+  if (!cycle || cycle.isClosed) {
+    return res.status(403).json({
+      message: "This year is closed. Cannot add expense.",
+    });
+  }
   const expense = await Expense.create({
     title,
     amount,
+    cycle: cycle._id,
     addedBy: req.user._id,
     status: "pending",
   });
@@ -37,6 +43,13 @@ exports.create = async (req, res) => {
 exports.approve = async (req, res) => {
   const expense = await Expense.findById(req.params.id);
   if (!expense) return res.status(404).json({ message: "Not found" });
+
+  const cycle = await PujaCycle.findById(expense.cycle);
+  if (cycle.isClosed) {
+    return res.status(403).json({
+      message: "Year is closed. Cannot modify expenses.",
+    });
+  }
 
   expense.status = "approved";
   await expense.save();

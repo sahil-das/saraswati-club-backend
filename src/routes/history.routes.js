@@ -1,17 +1,23 @@
 const router = require("express").Router();
 const auth = require("../middleware/auth.middleware");
 const admin = require("../middleware/admin.middleware");
-const historyController = require("../controllers/history.controller");
+const ctrl = require("../controllers/history.controller");
 
-router.use(auth, admin);
+router.use(auth);
 
-// SUMMARY
-router.get("/:year/summary", historyController.yearSummary);
+/* ===== LIST CYCLES ===== */
+router.get("/cycles", admin, ctrl.listCycles);
 
-// DETAILS
-router.get("/:year/weekly", historyController.weekly);
-router.get("/:year/puja", historyController.puja);
-router.get("/:year/donations", historyController.donations);
-router.get("/:year/expenses", historyController.expenses);
+/* ===== SUMMARY ===== */
+router.get("/cycle/:cycleId/summary", admin, ctrl.cycleSummary);
+
+/* ===== BREAKDOWNS ===== */
+router.get("/cycle/:cycleId/weekly", admin, ctrl.weekly);
+router.get("/cycle/:cycleId/puja", admin, ctrl.puja);
+router.get("/cycle/:cycleId/donations", admin, ctrl.donations);
+router.get("/cycle/:cycleId/expenses", admin, ctrl.expenses);
+
+/* ===== CLOSE CYCLE ===== */
+router.post("/cycle/:cycleId/close", admin, ctrl.closeCycle);
 
 module.exports = router;
