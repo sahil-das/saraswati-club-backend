@@ -2,24 +2,22 @@ const PujaContribution = require("../models/PujaContribution");
 const PujaCycle = require("../models/PujaCycle");
 const User = require("../models/User");
 
-/* ================= LIST (ACTIVE CYCLE ONLY) ================= */
+/* ================= LIST (ACTIVE CYCLE) ================= */
 exports.list = async (req, res) => {
   try {
-    const cycle = await PujaCycle.findOne({ isActive: true }).lean();
-    if (!cycle) {
-      return res.json({ success: true, data: [] });
-    }
+    const cycle = await PujaCycle.findOne({ isActive: true });
+    if (!cycle) return res.json({ success: true, data: [], total: 0 });
 
-    const data = await PujaContribution.find({
-      cycle: cycle._id,
-    })  
+    const data = await PujaContribution.find({ cycle: cycle._id })
       .populate("member", "name email")
-      .populate("addedBy", "name email")
+      .populate("addedBy", "name")
       .sort({ createdAt: -1 });
 
-    res.json({ success: true, data });
+    // Calculate total on server
+    const total = data.reduce((sum, item) => sum + (item.amount || 0), 0);
+
+    res.json({ success: true, data, total });
   } catch (err) {
-    console.error("Puja list error:", err);
     res.status(500).json({ message: "Failed to load puja contributions" });
   }
 };
@@ -89,36 +87,21 @@ exports.summary = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     const { memberId, amount } = req.body;
-
-    if (!memberId || !amount) {
-      return res.status(400).json({ message: "Missing fields" });
-    }
-
     const cycle = await PujaCycle.findOne({ isActive: true });
-    if (!cycle) {
-      return res.status(400).json({ message: "No active cycle" });
-    }
 
-    // 🔒 Prevent edits to closed year
     if (!cycle || cycle.isClosed) {
-      return res.status(403).json({
-        message: "This year is closed. Cannot add contribution.",
-      });
+      return res.status(403).json({ message: "Year is closed." });
     }
 
     const contribution = await PujaContribution.create({
       member: memberId,
       amount,
-      cycle: cycle._id,      // ✅ FIX
+      cycle: cycle._id,
       addedBy: req.user._id,
     });
 
-    res.status(201).json({
-      success: true,
-      data: contribution,
-    });
+    res.status(201).json({ success: true, data: contribution });
   } catch (err) {
-    console.error("Puja contribution error:", err);
     res.status(500).json({ message: "Create failed" });
   }
 };

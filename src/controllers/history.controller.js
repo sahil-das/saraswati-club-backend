@@ -1,18 +1,18 @@
+// src/controllers/history.controller.js
+const mongoose = require("mongoose");
+const PujaCycle = require("../models/PujaCycle");
 const WeeklyPayment = require("../models/WeeklyPayment");
 const PujaContribution = require("../models/PujaContribution");
 const Donation = require("../models/Donation");
 const Expense = require("../models/Expense");
-const PujaCycle = require("../models/PujaCycle");
-const mongoose = require("mongoose");
+const financeService = require("../services/finance.service");
 
-/* =====================================================
-   LIST ALL CYCLES (FOR HISTORY PAGE)
-   ===================================================== */
+/* ================= LIST ALL CYCLES ================= */
 exports.listCycles = async (req, res) => {
   try {
     const cycles = await PujaCycle.find()
       .sort({ startDate: -1 })
-      .select("name startDate endDate isClosed");
+      .select("name startDate endDate isClosed closingBalance"); // Added closingBalance
 
     res.json({ success: true, data: cycles });
   } catch (err) {
@@ -21,73 +21,26 @@ exports.listCycles = async (req, res) => {
   }
 };
 
-/* =====================================================
-   SUMMARY (SINGLE CYCLE)
-   ===================================================== */
+/* ================= CYCLE SUMMARY (The Fix) ================= */
 exports.cycleSummary = async (req, res) => {
   try {
     const { cycleId } = req.params;
-    const cycle = await PujaCycle.findById(cycleId);
 
-    if (!cycle) {
-      return res.status(404).json({ message: "Cycle not found" });
-    }
+    // 1. Use the Unified Service
+    const stats = await financeService.calculateCycleStats(cycleId);
 
-    /* ===== WEEKLY ===== */
-    const weekly = await WeeklyPayment.aggregate([
-      { $match: { cycle: cycle._id } },
-      { $unwind: "$weeks" },
-      { $match: { "weeks.paid": true } },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: cycle.weeklyAmount },
-        },
-      },
-    ]);
-
-    /* ===== PUJA ===== */
-    const puja = await PujaContribution.aggregate([
-      { $match: { cycle: cycle._id } },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]);
-
-    /* ===== DONATIONS ===== */
-    const donations = await Donation.aggregate([
-      { $match: { cycle: cycle._id } },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]);
-
-    /* ===== EXPENSES ===== */
-    const expensesAgg = await Expense.aggregate([
-      {
-        $match: {
-          cycle: cycle._id,
-          status: "approved",
-        },
-      },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]);
-
-    const collections =
-      (weekly[0]?.total || 0) +
-      (puja[0]?.total || 0) +
-      (donations[0]?.total || 0);
-
-    const expenses = expensesAgg[0]?.total || 0;
-
+    // 2. Return consistent data
     res.json({
       success: true,
       data: {
-        openingBalance: cycle.openingBalance || 0,
-        weeklyTotal: weekly[0]?.total || 0,
-        pujaTotal: puja[0]?.total || 0,
-        donationTotal: donations[0]?.total || 0,
-        collections,
-        expenses,
-        closingBalance:
-          (cycle.openingBalance || 0) + collections - expenses,
-        isClosed: cycle.isClosed,
+        openingBalance: stats.openingBalance,
+        weeklyTotal: stats.weeklyTotal,
+        pujaTotal: stats.pujaTotal,
+        donationTotal: stats.donationTotal,
+        collections: stats.totalCollection,
+        expenses: stats.expenseTotal,
+        closingBalance: stats.closingBalance,
+        isClosed: stats.isClosed,
       },
     });
   } catch (err) {
@@ -96,23 +49,23 @@ exports.cycleSummary = async (req, res) => {
   }
 };
 
-/* =====================================================
-   WEEKLY – PER MEMBER TOTAL
-   ===================================================== */
+/* ================= DETAILED LISTS (Keep existing breakdowns) ================= */
+// These endpoints return lists (arrays), not just totals. 
+// They must use the same filters as the service (e.g. status: 'approved').
+
 exports.weekly = async (req, res) => {
   try {
     const { cycleId } = req.params;
-
     const cycle = await PujaCycle.findById(cycleId).lean();
     if (!cycle) return res.json({ success: true, data: [] });
 
+    // Ensure we use the cycle's stored weeklyAmount
     const weeklyAmount = Number(cycle.weeklyAmount) || 0;
 
     const rows = await WeeklyPayment.aggregate([
       { $match: { cycle: cycle._id } },
       { $unwind: "$weeks" },
       { $match: { "weeks.paid": true } },
-
       {
         $lookup: {
           from: "users",
@@ -122,22 +75,14 @@ exports.weekly = async (req, res) => {
         },
       },
       { $unwind: "$member" },
-
-      // ✅ inject weeklyAmount safely
-      {
-        $addFields: {
-          amount: weeklyAmount,
-        },
-      },
-
       {
         $group: {
           _id: "$member._id",
           memberName: { $first: "$member.name" },
-          total: { $sum: "$amount" },
+          totalWeeksPaid: { $sum: 1 }, // Count weeks
+          total: { $sum: weeklyAmount }, // Multiply by amount
         },
       },
-
       { $sort: { memberName: 1 } },
     ]);
 
@@ -148,20 +93,11 @@ exports.weekly = async (req, res) => {
   }
 };
 
-
-/* =====================================================
-   PUJA – PER MEMBER TOTAL
-   ===================================================== */
 exports.puja = async (req, res) => {
   try {
     const { cycleId } = req.params;
-
     const rows = await PujaContribution.aggregate([
-      {
-        $match: {
-          cycle: new mongoose.Types.ObjectId(cycleId),
-        },
-      },
+      { $match: { cycle: new mongoose.Types.ObjectId(cycleId) } },
       {
         $lookup: {
           from: "users",
@@ -180,7 +116,6 @@ exports.puja = async (req, res) => {
       },
       { $sort: { memberName: 1 } },
     ]);
-
     res.json({ success: true, data: rows });
   } catch (err) {
     console.error("History puja error:", err);
@@ -188,18 +123,11 @@ exports.puja = async (req, res) => {
   }
 };
 
-
-/* =====================================================
-   DONATIONS – LIST
-   ===================================================== */
 exports.donations = async (req, res) => {
   try {
     const { cycleId } = req.params;
-
-    const rows = await Donation.find({ cycle: cycleId })
-      .sort({ createdAt: 1 })
-      .lean();
-
+    const rows = await Donation.find({ cycle: cycleId }).sort({ createdAt: 1 }).lean();
+    
     res.json({
       success: true,
       data: rows.map((d) => ({
@@ -214,17 +142,11 @@ exports.donations = async (req, res) => {
   }
 };
 
-/* =====================================================
-   EXPENSES – LIST
-   ===================================================== */
 exports.expenses = async (req, res) => {
   try {
     const { cycleId } = req.params;
-
-    const rows = await Expense.find({
-      cycle: cycleId,
-      status: "approved",
-    })
+    // IMPORTANT: Filter by 'approved' to match the service
+    const rows = await Expense.find({ cycle: cycleId, status: "approved" })
       .sort({ createdAt: 1 })
       .lean();
 
@@ -242,29 +164,4 @@ exports.expenses = async (req, res) => {
   }
 };
 
-/* =====================================================
-   CLOSE CYCLE (ADMIN)
-   ===================================================== */
-exports.closeCycle = async (req, res) => {
-  try {
-    const { cycleId } = req.params;
-
-    const cycle = await PujaCycle.findById(cycleId);
-    if (!cycle) {
-      return res.status(404).json({ message: "Cycle not found" });
-    }
-
-    if (cycle.isClosed) {
-      return res.status(400).json({ message: "Cycle already closed" });
-    }
-
-    cycle.isClosed = true;
-    cycle.closedAt = new Date();
-    await cycle.save();
-
-    res.json({ success: true });
-  } catch (err) {
-    console.error("Close cycle error:", err);
-    res.status(500).json({ message: "Close cycle failed" });
-  }
-};
+// closeCycle is now handled by cycle.controller.js, so we don't need it here.

@@ -1,7 +1,9 @@
+// src/routes/history.routes.js
 const router = require("express").Router();
 const auth = require("../middleware/auth.middleware");
 const admin = require("../middleware/admin.middleware");
 const ctrl = require("../controllers/history.controller");
+const cycleCtrl = require("../controllers/cycle.controller"); // Import Cycle Controller
 
 router.use(auth);
 
@@ -18,6 +20,9 @@ router.get("/cycle/:cycleId/donations", admin, ctrl.donations);
 router.get("/cycle/:cycleId/expenses", admin, ctrl.expenses);
 
 /* ===== CLOSE CYCLE ===== */
-router.post("/cycle/:cycleId/close", admin, ctrl.closeCycle);
+// We map this to the cycle controller's logic
+// Note: This attempts to close the *Active* cycle. 
+// If the user tries to close an old cycle, the controller will reject it or just close the active one.
+router.post("/cycle/:cycleId/close", admin, cycleCtrl.closeActiveCycle);
 
 module.exports = router;

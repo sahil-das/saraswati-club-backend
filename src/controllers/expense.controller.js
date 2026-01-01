@@ -3,31 +3,38 @@ const PujaCycle = require("../models/PujaCycle");
 
 /* ===== LIST (ACTIVE CYCLE) ===== */
 exports.list = async (req, res) => {
-  const cycle = await PujaCycle.findOne({ isActive: true });
-  if (!cycle) return res.json({ success: true, data: [] });
+  try {
+    const cycle = await PujaCycle.findOne({ isActive: true });
+    if (!cycle) return res.json({ success: true, data: [], totalApproved: 0 });
 
-  const expenses = await Expense.find({
-    cycle: cycle._id,
-  }).sort({ createdAt: -1 });
+    const expenses = await Expense.find({ cycle: cycle._id })
+      .populate("addedBy", "name")
+      .sort({ createdAt: -1 });
 
-  res.json({ success: true, data: expenses });
+    // Server-side calculation to guarantee match with Dashboard
+    const totalApproved = expenses
+      .filter((e) => e.status === "approved")
+      .reduce((sum, e) => sum + (e.amount || 0), 0);
+
+    res.json({
+      success: true,
+      data: expenses,
+      totalApproved, // Frontend should display this
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
 };
 
 /* ===== CREATE ===== */
 exports.create = async (req, res) => {
   const { title, amount } = req.body;
-  if (!title || !amount) {
-    return res.status(400).json({ message: "Missing fields" });
-  }
-
   const cycle = await PujaCycle.findOne({ isActive: true });
 
-      // 🔒 Prevent edits to closed year
   if (!cycle || cycle.isClosed) {
-    return res.status(403).json({
-      message: "This year is closed. Cannot add expense.",
-    });
+    return res.status(403).json({ message: "Year is closed." });
   }
+
   const expense = await Expense.create({
     title,
     amount,
@@ -42,14 +49,9 @@ exports.create = async (req, res) => {
 /* ===== APPROVE ===== */
 exports.approve = async (req, res) => {
   const expense = await Expense.findById(req.params.id);
-  if (!expense) return res.status(404).json({ message: "Not found" });
-
-  const cycle = await PujaCycle.findById(expense.cycle);
-  if (cycle.isClosed) {
-    return res.status(403).json({
-      message: "Year is closed. Cannot modify expenses.",
-    });
-  }
+  const cycle = await PujaCycle.findOne({ _id: expense.cycle });
+  
+  if (cycle.isClosed) return res.status(403).json({ message: "Year is closed." });
 
   expense.status = "approved";
   await expense.save();
@@ -59,7 +61,9 @@ exports.approve = async (req, res) => {
 /* ===== REJECT ===== */
 exports.reject = async (req, res) => {
   const expense = await Expense.findById(req.params.id);
-  if (!expense) return res.status(404).json({ message: "Not found" });
+  // We can reject even if closed? Usually no, strict accounting.
+  const cycle = await PujaCycle.findOne({ _id: expense.cycle });
+  if (cycle.isClosed) return res.status(403).json({ message: "Year is closed." });
 
   expense.status = "rejected";
   await expense.save();

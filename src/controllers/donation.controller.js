@@ -3,33 +3,29 @@ const PujaCycle = require("../models/PujaCycle");
 
 /* ===== LIST (ACTIVE CYCLE) ===== */
 exports.list = async (req, res) => {
-  const cycle = await PujaCycle.findOne({ isActive: true });
-  if (!cycle) return res.json({ success: true, data: [] });
+  try {
+    const cycle = await PujaCycle.findOne({ isActive: true });
+    if (!cycle) return res.json({ success: true, data: [], total: 0 });
 
-  const donations = await Donation.find({
- 
-    cycle: cycle._id,
-  })
-    .populate("addedBy", "name email")
-    .sort({ createdAt: -1 });
+    const donations = await Donation.find({ cycle: cycle._id })
+      .populate("addedBy", "name")
+      .sort({ createdAt: -1 });
 
-  res.json({ success: true, data: donations });
+    const total = donations.reduce((sum, d) => sum + (d.amount || 0), 0);
+
+    res.json({ success: true, data: donations, total });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
 };
 
 /* ===== CREATE ===== */
 exports.create = async (req, res) => {
   const { donorName, amount } = req.body;
-  if (!donorName || !amount) {
-    return res.status(400).json({ message: "All fields required" });
-  }
-
   const cycle = await PujaCycle.findOne({ isActive: true });
 
-    // 🔒 Prevent edits to closed year
   if (!cycle || cycle.isClosed) {
-    return res.status(403).json({
-      message: "This year is closed. Cannot add donation.",
-    });
+    return res.status(403).json({ message: "Year is closed." });
   }
 
   const donation = await Donation.create({

@@ -1,19 +1,20 @@
-const router = require("express").Router();
-const cycleController = require("../controllers/cycle.controller");
-const auth = require("../middleware/auth.middleware");
+const express = require("express");
+const router = express.Router();
+const controller = require("../controllers/cycle.controller");
+
+// Correct Imports based on your project structure
+const auth = require("../middleware/auth.middleware"); 
 const admin = require("../middleware/admin.middleware");
 
-router.post("/", auth, admin, cycleController.create);
-router.get("/active", auth, cycleController.getActive);
-router.get("/", auth, admin, cycleController.list);
-router.post(
-  "/:id/close",
-  auth,
-  admin,
-  cycleController.closeCycle
-);
+// Public/Member Routes
+router.get("/active", auth, controller.getActive);
+router.get("/list", auth, controller.list);
 
-/* 🔥 ADD THIS */
-router.get("/years", auth, cycleController.getYears);
+// Admin Routes
+router.post("/create", auth, admin, controller.create);
+
+// Important: Ensure your controller has 'closeActiveCycle' (from Step 2)
+// If you haven't updated the controller yet, this line might also fail.
+router.post("/close", auth, admin, controller.closeActiveCycle); 
 
 module.exports = router;

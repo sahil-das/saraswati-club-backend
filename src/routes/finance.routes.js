@@ -8,6 +8,6 @@ router.get("/puja-total", auth, financeController.pujaTotal);
 router.get("/donations-total", auth, financeController.donationTotal);
 router.get("/expenses-total", auth, financeController.expenseTotal);
 // optional
-router.get("/central-fund", auth, financeController.centralFund);
+// router.get("/central-fund", auth, financeController.centralFund); // handler not implemented
 
 module.exports = router;
