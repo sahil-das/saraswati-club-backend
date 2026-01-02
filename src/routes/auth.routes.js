@@ -1,9 +1,15 @@
 const express = require("express");
 const router = express.Router();
-const { login, getMe } = require("../controllers/auth.controller");
-const protect = require("../middleware/auth.middleware");
+const controller = require("../controllers/auth.controller");
+const auth = require("../middleware/auth.middleware"); // Ensure you have this
 
-router.post("/login", login);
-router.get("/me", protect, getMe);
+// Existing Routes
+//router.post("/register", controller.register);
+router.post("/login", controller.login);
+router.get("/me", auth, controller.getMe); // If you have a 'getMe' to fetch user data
+
+// ✅ NEW PROFILE ROUTES
+router.put("/profile", auth, controller.updateProfile);
+router.put('/change-password', auth, controller.changePassword);
 
 module.exports = router;

@@ -8,6 +8,7 @@ router.use(auth);
 
 router.get('/', adminOnly, memberCtrl.list);
 router.post('/', adminOnly, memberCtrl.create);
+router.get("/my-stats", auth, memberCtrl.getMyStats);
 router.get('/:id', memberCtrl.details);
 
 module.exports = router;
