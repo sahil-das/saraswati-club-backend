@@ -10,53 +10,49 @@ exports.createYear = async (req, res) => {
     
     const { clubId, id: userId } = req.user;
 
-    // 1. Validate Frequency
+    // Validate Frequency
     const VALID_FREQUENCIES = ["weekly", "monthly", "none"];
     const frequency = subscriptionFrequency || "weekly";
-    if (!VALID_FREQUENCIES.includes(frequency)) {
-      return res.status(400).json({ message: "Invalid frequency." });
-    }
+    if (!VALID_FREQUENCIES.includes(frequency)) return res.status(400).json({ message: "Invalid frequency." });
 
-    // 2. FIND PREVIOUS YEAR (Active or Closed)
-    const lastYear = await FestivalYear.findOne({ club: clubId })
-                                       .sort({ createdAt: -1 });
+    // 1. FIND LAST YEAR (Active or Closed)
+    const lastYear = await FestivalYear.findOne({ club: clubId }).sort({ createdAt: -1 });
 
     let derivedBalance = 0;
-    
-    if (lastYear) {
-       console.log(`📅 Found previous year: "${lastYear.name}"`);
-       derivedBalance = await calculateBalance(lastYear._id, lastYear.openingBalance);
-       console.log(`✅ Calculated Carry Forward: ₹${derivedBalance}`);
 
-       // Close old year if active
-       if (lastYear.isActive) {
-         lastYear.isActive = false;
-         await lastYear.save();
+    if (lastYear) {
+       console.log(`📅 Previous Year Found: "${lastYear.name}"`);
+
+       // A. If previous year is ALREADY CLOSED, use its stored Closing Balance
+       if (lastYear.isClosed) {
+          derivedBalance = lastYear.closingBalance;
+          console.log(`✅ Using Stored Closing Balance: ₹${derivedBalance}`);
+       } 
+       // B. If previous year is STILL ACTIVE, calculate it now & close it
+       else {
+          derivedBalance = await calculateBalance(lastYear._id, lastYear.openingBalance);
+          console.log(`⚠️ Previous year was active. Calculated Balance: ₹${derivedBalance}`);
+          
+          // Auto-close previous year
+          lastYear.isActive = false;
+          lastYear.isClosed = true;
+          lastYear.closingBalance = derivedBalance; // Save it now
+          await lastYear.save();
        }
     }
 
-    // 3. INTELLIGENT OPENING BALANCE LOGIC
-    // Logic:
-    // - If user sends explicit number (e.g., 5000), use it.
-    // - If user sends 0, but we have a derived balance, prefer derived balance (Safe default).
-    // - If user sends "", null, or undefined, use derived balance.
-    // - If user REALLY wants 0 despite having previous money, they can edit it later in settings.
+    // 2. Determine Opening Balance
+    // Prefer Derived Balance unless user explicitly overrides with a non-zero number
+    let finalOpeningBalance = derivedBalance;
     
-    let finalOpeningBalance = derivedBalance; // Default to carry forward
-
     if (openingBalance !== undefined && openingBalance !== "" && openingBalance !== null) {
         const inputVal = Number(openingBalance);
-        
-        // Only override if the input is NOT zero, OR if derived is zero.
-        // If input is 0 and derived is > 0, we assume user left it empty/default on frontend.
         if (inputVal !== 0 || derivedBalance === 0) {
             finalOpeningBalance = inputVal;
         }
     }
 
-    console.log(`💰 Final Opening Balance set to: ₹${finalOpeningBalance}`);
-
-    // 4. Create New Year
+    // 3. Create New Year
     const newYear = await FestivalYear.create({
       club: clubId,
       name,
@@ -111,12 +107,32 @@ exports.updateYear = async (req, res) => {
 };
   
 exports.closeYear = async (req, res) => {
-    try {
-      const year = await FestivalYear.findOneAndUpdate(
-         { _id: req.params.id, club: req.user.clubId },
-         { isActive: false, isClosed: true },
-         { new: true }
-      );
-      res.json({ success: true, message: "Year closed." });
-    } catch (err) { res.status(500).json({ message: "Server Error" }); }
+  try {
+    const { id } = req.params;
+    const { clubId } = req.user;
+
+    // 1. Find the year
+    const year = await FestivalYear.findOne({ _id: id, club: clubId });
+    if (!year) return res.status(404).json({ message: "Year not found" });
+
+    // 2. Calculate Final Balance one last time
+    const finalBalance = await calculateBalance(year._id, year.openingBalance);
+
+    // 3. Save updates
+    year.isActive = false;
+    year.isClosed = true;
+    year.closingBalance = finalBalance; // ✅ STORED PERMANENTLY
+    
+    await year.save();
+
+    res.json({ 
+      success: true, 
+      message: `Year '${year.name}' closed. Final Balance: ₹${finalBalance} saved.`,
+      data: year
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server Error" });
+  }
 };

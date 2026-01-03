@@ -16,6 +16,8 @@ const festivalYearSchema = new mongoose.Schema({
   amountPerInstallment: { type: Number, default: 0 }, // e.g. 20 Rs
   
   openingBalance: { type: Number, default: 0 },
+  closingBalance: { type: Number, default: 0 },
+  
   isActive: { type: Boolean, default: false },
   isClosed: { type: Boolean, default: false },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }

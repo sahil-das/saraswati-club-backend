@@ -94,8 +94,15 @@ exports.payInstallment = async (req, res) => {
   try {
     const { subscriptionId, installmentNumber } = req.body;
     
-    const sub = await Subscription.findById(subscriptionId);
+    const sub = await Subscription.findById(subscriptionId).populate("year");
     if (!sub) return res.status(404).json({ message: "Subscription not found" });
+
+    // 🔒 SECURITY CHECK: If Year Frequency is 'none', block payment
+    if (sub.year.subscriptionFrequency === 'none') {
+       return res.status(400).json({ 
+         message: "This financial year is set to 'Donations Only'. Subscriptions are disabled." 
+       });
+    }
 
     // 🔒 SECURITY CHECK
     if (req.user.role !== "admin") {
