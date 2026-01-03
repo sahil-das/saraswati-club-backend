@@ -1,15 +1,14 @@
+// src/routes/auth.routes.js
 const express = require("express");
 const router = express.Router();
-const controller = require("../controllers/auth.controller");
-const auth = require("../middleware/auth.middleware"); // Ensure you have this
+const authController = require("../controllers/auth.controller");
+const authMiddleware = require("../middleware/auth.middleware");
 
-// Existing Routes
-//router.post("/register", controller.register);
-router.post("/login", controller.login);
-router.get("/me", auth, controller.getMe); // If you have a 'getMe' to fetch user data
+// Public Routes
+router.post("/register", authController.registerClub); // 👈 NEW
+router.post("/login", authController.login);
 
-// ✅ NEW PROFILE ROUTES
-router.put("/profile", auth, controller.updateProfile);
-router.put('/change-password', auth, controller.changePassword);
+// Protected Routes
+router.get("/me", authMiddleware, authController.getMe);
 
 module.exports = router;

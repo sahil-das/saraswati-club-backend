@@ -1,84 +1,90 @@
-// src/controllers/finance.controller.js
-const PujaCycle = require("../models/PujaCycle");
-const financeService = require("../services/finance.service");
+const FestivalYear = require("../models/FestivalYear");
+const Subscription = require("../models/Subscription");
+const MemberFee = require("../models/MemberFee");
+const Donation = require("../models/Donation");
+const Expense = require("../models/Expense");
 
-/* ================= DASHBOARD SUMMARY ================= */
-exports.summary = async (req, res) => {
+/**
+ * @route GET /api/v1/finance/summary
+ * @desc Get global financial status for the ACTIVE year (Dashboard Stats)
+ */
+exports.getSummary = async (req, res) => {
   try {
-    // 1. Get Active Cycle
-    // Note: 'req.activeCycle' is available if you use the checkYearOpen middleware, 
-    // but for the dashboard (read-only), we might not enforce that middleware everywhere.
-    // So we fetch safely here.
-    const cycle = await PujaCycle.findOne({ isActive: true });
+    const { clubId } = req.user;
 
-    if (!cycle) {
+    // 1. Get Active Year
+    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
+    
+    // If no year exists yet, return zeroes
+    if (!activeYear) {
       return res.json({
         success: true,
         data: {
-          weeklyTotal: 0,
-          pujaTotal: 0,
-          donationTotal: 0,
-          expenseTotal: 0,
-          centralBalance: 0,
-        },
+          yearName: "No Active Year",
+          totalIncome: 0,
+          totalExpense: 0,
+          balance: 0,
+          breakdown: { subscriptions: 0, memberFees: 0, donations: 0 }
+        }
       });
     }
 
-    // 2. Use the Service for Consistency
-    const stats = await financeService.calculateCycleStats(cycle._id);
+    const yearId = activeYear._id;
 
-    // 3. Send Response
+    // 2. AGGREGATE: Subscriptions (Weekly/Monthly)
+    // We sum up the 'amountExpected' of all installments that are marked 'isPaid: true'
+    const subscriptionStats = await Subscription.aggregate([
+      { $match: { club: clubId, year: yearId } },
+      { $unwind: "$installments" },
+      { $match: { "installments.isPaid": true } },
+      { $group: { _id: null, total: { $sum: "$installments.amountExpected" } } }
+    ]);
+    const totalSubscriptions = subscriptionStats[0]?.total || 0;
+
+    // 3. AGGREGATE: Member Fees (Chanda)
+    const memberFeeStats = await MemberFee.aggregate([
+      { $match: { club: clubId, year: yearId } },
+      { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+    const totalMemberFees = memberFeeStats[0]?.total || 0;
+
+    // 4. AGGREGATE: Donations (Public)
+    const donationStats = await Donation.aggregate([
+      { $match: { club: clubId, year: yearId } },
+      { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+    const totalDonations = donationStats[0]?.total || 0;
+
+    // 5. AGGREGATE: Expenses
+    const expenseStats = await Expense.aggregate([
+      { $match: { club: clubId, year: yearId } }, // Include 'status: approved' if you want
+      { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+    const totalExpenses = expenseStats[0]?.total || 0;
+
+    // 6. Final Calculation
+    const openingBalance = activeYear.openingBalance || 0;
+    const currentIncome = totalSubscriptions + totalMemberFees + totalDonations;
+    const totalBalance = openingBalance + currentIncome - totalExpenses;
+
     res.json({
       success: true,
       data: {
-        weeklyTotal: stats.weeklyTotal,
-        pujaTotal: stats.pujaTotal,
-        donationTotal: stats.donationTotal,
-        expenseTotal: stats.expenseTotal,
-        centralBalance: stats.closingBalance, // Matches "Closing Balance" logic
-      },
+        yearName: activeYear.name,
+        openingBalance,
+        totalIncome: currentIncome,
+        totalExpense: totalExpenses,
+        balance: totalBalance,
+        breakdown: {
+          subscriptions: totalSubscriptions,
+          memberFees: totalMemberFees,
+          donations: totalDonations
+        }
+      }
     });
+
   } catch (err) {
-    console.error("Finance summary error:", err);
-    res.status(500).json({ message: "Finance summary failed" });
+    console.error("Finance Summary Error:", err);
+    res.status(500).json({ message: "Server error calculating finances" });
   }
-};
-
-/* ================= INDIVIDUAL TOTALS (Used by specific widgets) ================= */
-// We reuse the service to ensure these widgets match the main summary
-
-exports.weeklyTotal = async (req, res) => {
-  try {
-    const cycle = await PujaCycle.findOne({ isActive: true });
-    if (!cycle) return res.json({ total: 0 });
-    const stats = await financeService.calculateCycleStats(cycle._id);
-    res.json({ total: stats.weeklyTotal });
-  } catch (err) { res.status(500).json({ total: 0 }); }
-};
-
-exports.pujaTotal = async (req, res) => {
-  try {
-    const cycle = await PujaCycle.findOne({ isActive: true });
-    if (!cycle) return res.json({ total: 0 });
-    const stats = await financeService.calculateCycleStats(cycle._id);
-    res.json({ total: stats.pujaTotal });
-  } catch (err) { res.status(500).json({ total: 0 }); }
-};
-
-exports.donationTotal = async (req, res) => {
-  try {
-    const cycle = await PujaCycle.findOne({ isActive: true });
-    if (!cycle) return res.json({ total: 0 });
-    const stats = await financeService.calculateCycleStats(cycle._id);
-    res.json({ total: stats.donationTotal });
-  } catch (err) { res.status(500).json({ total: 0 }); }
-};
-
-exports.expenseTotal = async (req, res) => {
-  try {
-    const cycle = await PujaCycle.findOne({ isActive: true });
-    if (!cycle) return res.json({ total: 0 });
-    const stats = await financeService.calculateCycleStats(cycle._id);
-    res.json({ total: stats.expenseTotal });
-  } catch (err) { res.status(500).json({ total: 0 }); }
 };

@@ -1,71 +1,54 @@
 const Expense = require("../models/Expense");
-const PujaCycle = require("../models/PujaCycle");
+const FestivalYear = require("../models/FestivalYear");
 
-/* ===== LIST (ACTIVE CYCLE) ===== */
-exports.list = async (req, res) => {
+exports.addExpense = async (req, res) => {
   try {
-    const cycle = await PujaCycle.findOne({ isActive: true });
-    if (!cycle) return res.json({ success: true, data: [], totalApproved: 0 });
+    const { title, amount, category, date } = req.body;
+    const { clubId, id: userId } = req.user;
 
-    const expenses = await Expense.find({ cycle: cycle._id })
-      .populate("addedBy", "name")
-      .sort({ createdAt: -1 });
+    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
+    if (!activeYear) return res.status(400).json({ message: "No active year found" });
 
-    // Server-side calculation to guarantee match with Dashboard
-    const totalApproved = expenses
-      .filter((e) => e.status === "approved")
-      .reduce((sum, e) => sum + (e.amount || 0), 0);
-
-    res.json({
-      success: true,
-      data: expenses,
-      totalApproved, // Frontend should display this
+    const expense = await Expense.create({
+      club: clubId,
+      year: activeYear._id,
+      title,
+      amount,
+      category,
+      date: date || new Date(),
+      addedBy: userId,
+      status: "approved" // Auto-approve for now (or 'pending' if you want workflow)
     });
+
+    res.status(201).json({ success: true, data: expense });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to add expense" });
+  }
+};
+
+exports.getExpenses = async (req, res) => {
+  try {
+    const { clubId } = req.user;
+    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
+    
+    // If no year, return empty list (don't crash)
+    if (!activeYear) return res.json({ success: true, data: [] });
+
+    const expenses = await Expense.find({ club: clubId, year: activeYear._id })
+      .populate("addedBy", "name")
+      .sort({ date: -1 });
+
+    res.json({ success: true, data: expenses });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
 };
 
-/* ===== CREATE ===== */
-exports.create = async (req, res) => {
-  const { title, amount } = req.body;
-  const cycle = await PujaCycle.findOne({ isActive: true });
-
-  if (!cycle || cycle.isClosed) {
-    return res.status(403).json({ message: "Year is closed." });
+exports.deleteExpense = async (req, res) => {
+  try {
+    await Expense.findOneAndDelete({ _id: req.params.id, club: req.user.clubId });
+    res.json({ success: true, message: "Expense deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
   }
-
-  const expense = await Expense.create({
-    title,
-    amount,
-    cycle: cycle._id,
-    addedBy: req.user._id,
-    status: "pending",
-  });
-
-  res.json({ success: true, data: expense });
-};
-
-/* ===== APPROVE ===== */
-exports.approve = async (req, res) => {
-  const expense = await Expense.findById(req.params.id);
-  const cycle = await PujaCycle.findOne({ _id: expense.cycle });
-  
-  if (cycle.isClosed) return res.status(403).json({ message: "Year is closed." });
-
-  expense.status = "approved";
-  await expense.save();
-  res.json({ success: true });
-};
-
-/* ===== REJECT ===== */
-exports.reject = async (req, res) => {
-  const expense = await Expense.findById(req.params.id);
-  // We can reject even if closed? Usually no, strict accounting.
-  const cycle = await PujaCycle.findOne({ _id: expense.cycle });
-  if (cycle.isClosed) return res.status(403).json({ message: "Year is closed." });
-
-  expense.status = "rejected";
-  await expense.save();
-  res.json({ success: true });
 };

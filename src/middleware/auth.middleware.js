@@ -1,28 +1,60 @@
-// src/middleware/auth.middleware.js
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const Membership = require("../models/Membership");
 
 module.exports = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
+  let token;
 
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ message: "No token" });
-  }
+  if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith("Bearer")
+  ) {
+    try {
+      // 1. Verify Token (Authentication)
+      token = req.headers.authorization.split(" ")[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-  try {
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await User.findById(decoded.id).select("-password");
+      if (!user) {
+        return res.status(401).json({ message: "User not found" });
+      }
 
-    const user = await User.findById(decoded.id).select("-password");
+      // Attach global user info
+      req.user = {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        isPlatformAdmin: user.isPlatformAdmin
+      };
 
-    // ✅ SAFETY CHECK: If token is valid but user was deleted
-    if (!user) {
-      return res.status(401).json({ message: "User no longer exists" });
+      // 2. Check for Club Context (Authorization)
+      // The frontend must send 'x-club-id' header when acting inside a dashboard
+      const clubId = req.headers["x-club-id"];
+
+      if (clubId) {
+        // Verify this user is actually a member of this club
+        const membership = await Membership.findOne({
+          user: user._id,
+          club: clubId,
+          status: "active"
+        });
+
+        if (!membership) {
+          return res.status(403).json({ message: "You are not a member of this club." });
+        }
+
+        // 🚀 INJECT CONTEXT
+        // Now controllers can use req.user.clubId and req.user.role
+        req.user.clubId = membership.club;
+        req.user.role = membership.role; 
+      }
+
+      next();
+    } catch (error) {
+      console.error("Auth Middleware Error:", error);
+      res.status(401).json({ message: "Not authorized, token failed" });
     }
-
-    req.user = user;
-    next();
-  } catch (err) {
-    return res.status(401).json({ message: "Invalid token" });
+  } else {
+    res.status(401).json({ message: "Not authorized, no token" });
   }
 };

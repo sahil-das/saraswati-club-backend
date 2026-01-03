@@ -1,13 +1,11 @@
-const router = require("express").Router();
-const auth = require("../middleware/auth.middleware");
-const financeController = require("../controllers/finance.controller");
+const express = require("express");
+const router = express.Router();
+const controller = require("../controllers/finance.controller");
+const authMiddleware = require("../middleware/auth.middleware");
 
-router.get("/summary", auth, financeController.summary);
-router.get("/weekly-total", auth, financeController.weeklyTotal);
-router.get("/puja-total", auth, financeController.pujaTotal);
-router.get("/donations-total", auth, financeController.donationTotal);
-router.get("/expenses-total", auth, financeController.expenseTotal);
-// optional
-// router.get("/central-fund", auth, financeController.centralFund); // handler not implemented
+router.use(authMiddleware);
+
+// The Dashboard calls this to show the "Big Numbers"
+router.get("/summary", controller.getSummary);
 
 module.exports = router;
