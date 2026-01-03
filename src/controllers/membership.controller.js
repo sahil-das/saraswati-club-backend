@@ -1,8 +1,10 @@
 const User = require("../models/User");
 const Membership = require("../models/Membership");
 const bcrypt = require("bcryptjs");
-
-/**
+const FestivalYear = require("../models/FestivalYear");
+const Subscription = require("../models/Subscription");
+/**const FestivalYear = require("../models/FestivalYear");
+const Subscription = require("../models/Subscription");
  * @route GET /api/v1/members
  * @desc Get all members of the CURRENT club
  */
@@ -41,6 +43,10 @@ exports.getAllMembers = async (req, res) => {
  */
 exports.addMember = async (req, res) => {
   try {
+    // 🔒 SECURITY CHECK: Only Admins can add members
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ message: "Access Denied. Only Admins can add members." });
+    }
     const { name, email, phone, role, password } = req.body;
     const { clubId } = req.user;
 
@@ -103,6 +109,10 @@ exports.addMember = async (req, res) => {
  */
 exports.removeMember = async (req, res) => {
   try {
+    // 🔒 SECURITY CHECK: Only Admins can remove members
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ message: "Access Denied. Only Admins can remove members." });
+    }
     const { id: membershipId } = req.params;
     const { clubId } = req.user;
 
@@ -117,5 +127,98 @@ exports.removeMember = async (req, res) => {
     res.json({ success: true, message: "Member removed from club" });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+/**
+ * @route PUT /api/v1/members/:id/role
+ * @desc Change a member's role (e.g. Member -> Admin)
+ */
+exports.updateRole = async (req, res) => {
+  try {
+    const { id: membershipId } = req.params;
+    const { role } = req.body; // "admin" or "member"
+    const { clubId } = req.user;
+
+    // 🔒 1. Security: Only Admins can do this
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ message: "Only Admins can change roles." });
+    }
+
+    // 🔒 2. Prevent removing the LAST admin
+    if (role !== "admin") {
+      const adminCount = await Membership.countDocuments({ club: clubId, role: "admin" });
+      if (adminCount <= 1) {
+        // Check if the user being demoted is actually an admin
+        const targetMember = await Membership.findById(membershipId);
+        if (targetMember && targetMember.role === "admin") {
+           return res.status(400).json({ message: "Cannot demote the last admin." });
+        }
+      }
+    }
+
+    // 3. Update the Role
+    const updatedMember = await Membership.findOneAndUpdate(
+      { _id: membershipId, club: clubId },
+      { role: role },
+      { new: true }
+    );
+
+    if (!updatedMember) return res.status(404).json({ message: "Member not found" });
+
+    res.json({ success: true, message: "Role updated successfully", data: updatedMember });
+
+  } catch (err) {
+    console.error("Update Role Error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+/**
+ * @desc Get Stats for Current Logged In Member
+ * @route GET /api/v1/members/my-stats
+ */
+exports.getMyStats = async (req, res) => {
+  try {
+    const { clubId, id: userId } = req.user;
+
+    // 1. Get Active Year
+    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
+    
+    // Default stats if no year exists
+    if (!activeYear) {
+      return res.json({ 
+        success: true, 
+        data: { totalPaid: 0, totalDue: 0, attendance: 0 } 
+      });
+    }
+
+    // 2. Find Membership ID
+    const membership = await Membership.findOne({ user: userId, club: clubId });
+    if (!membership) {
+       return res.status(404).json({ message: "Membership not found" });
+    }
+
+    // 3. Find Subscription (Payment Record)
+    const sub = await Subscription.findOne({ 
+      club: clubId, 
+      year: activeYear._id, 
+      member: membership._id 
+    });
+
+    // 4. Return Data
+    res.json({
+      success: true,
+      data: {
+        totalPaid: sub ? sub.totalPaid : 0,
+        totalDue: sub ? sub.totalDue : 0,
+        role: membership.role,
+        joinedAt: membership.createdAt
+      }
+    });
+
+  } catch (err) {
+    console.error("MyStats Error:", err);
+    res.status(500).json({ message: "Server Error" });
   }
 };

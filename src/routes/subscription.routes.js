@@ -3,14 +3,12 @@ const router = express.Router();
 const controller = require("../controllers/subscription.controller");
 const authMiddleware = require("../middleware/auth.middleware");
 
-// Secure all routes
 router.use(authMiddleware);
 
-// Admin Routes
-router.get("/", controller.getAllSubscriptions); // List everyone
-router.put("/:subscriptionId/installments", controller.updateInstallmentStatus); // Mark paid
+// Get a member's card (Auto-creates if missing)
+router.get("/member/:memberId", controller.getMemberSubscription);
 
-// Member Routes
-router.get("/me", controller.getMySubscription); // View my own card
+// Pay a week/month
+router.post("/pay", controller.payInstallment);
 
 module.exports = router;

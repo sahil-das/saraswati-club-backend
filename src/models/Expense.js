@@ -1,19 +1,23 @@
 const mongoose = require("mongoose");
 
 const expenseSchema = new mongoose.Schema({
-  // 🔗 LINKS
   club: { type: mongoose.Schema.Types.ObjectId, ref: "Club", required: true },
   year: { type: mongoose.Schema.Types.ObjectId, ref: "FestivalYear", required: true },
   
-  // 📝 DETAILS
-  title: { type: String, required: true, trim: true },
+  title: { type: String, required: true },
   amount: { type: Number, required: true },
-  category: { type: String, default: "General" }, // e.g. "Food", "Decoration"
+  category: { type: String, required: true },
+  description: String,
+  date: { type: Date, default: Date.now },
   
-  // 👤 META
-  addedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  status: { type: String, enum: ["pending", "approved", "rejected"], default: "approved" },
-  date: { type: Date, default: Date.now }
+  // 🆕 NEW FIELD: Approval Status
+  status: { 
+    type: String, 
+    enum: ["pending", "approved", "rejected"], 
+    default: "pending" 
+  },
+
+  recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
 }, { timestamps: true });
 
 module.exports = mongoose.model("Expense", expenseSchema);

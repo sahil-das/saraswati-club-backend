@@ -57,7 +57,13 @@ exports.getSummary = async (req, res) => {
 
     // 5. AGGREGATE: Expenses
     const expenseStats = await Expense.aggregate([
-      { $match: { club: clubId, year: yearId } }, // Include 'status: approved' if you want
+      { 
+        $match: { 
+          club: clubId, 
+          year: yearId,
+          status: "approved" // 👈 CRITICAL: Only count approved money!
+        } 
+      }, 
       { $group: { _id: null, total: { $sum: "$amount" } } }
     ]);
     const totalExpenses = expenseStats[0]?.total || 0;
