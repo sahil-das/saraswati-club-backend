@@ -1,7 +1,7 @@
 const MemberFee = require("../models/MemberFee");
 const FestivalYear = require("../models/FestivalYear");
 const Membership = require("../models/Membership");
-
+const { logAction } = require("../utils/auditLogger");
 /**
  * @route POST /api/v1/member-fees
  * @desc Record a payment (Chanda)
@@ -27,7 +27,15 @@ exports.createPayment = async (req, res) => {
       collectedBy: adminId,
       notes
     });
-
+  
+    // ✅ LOG THE ACTION
+    await logAction({
+      req,
+      action: "PAYMENT_COLLECTED",
+      target: `User ID: ${userId}`,
+      details: { amount: amount, notes: notes }
+    });
+    
     res.status(201).json({ success: true, message: "Payment recorded", data: fee });
   } catch (err) {
     console.error(err);

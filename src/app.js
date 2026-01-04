@@ -49,7 +49,7 @@ app.use("/api/v1/donations", donationRoutes);         // Public Donations
 // Financials (Expense & Stats)
 app.use("/api/v1/expenses", expenseRoutes);     // Expenses
 app.use("/api/v1/finance", financeRoutes);      // Dashboard Summary
-
+app.use("/api/v1/audit", require("./routes/audit.routes"));
 /* ================= ROOT ================= */
 app.get("/", (req, res) => {
   res.send("Saraswati Club SaaS Backend (v1) is Running");
