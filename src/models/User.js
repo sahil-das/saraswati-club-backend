@@ -3,19 +3,29 @@ const mongoose = require("mongoose");
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
+    
+    // 🔐 SYSTEM LOGIN ID (e.g., rahul@happy-club.com)
+    // Auto-generated. STRICTLY for login.
     email: { 
       type: String, 
       required: true, 
-      unique: true, // ✅ Global Uniqueness (One login for all clubs)
+      unique: true, 
       lowercase: true 
     },
-    password: { type: String, required: true, select: false }, // Hide by default
+
+    // 📧 PERSONAL EMAIL (e.g., rahul.roy@gmail.com)
+    // Optional. Used for Notifications.
+    personalEmail: { 
+      type: String, 
+      default: "", 
+      lowercase: true,
+      trim: true 
+    },
+
+    password: { type: String, required: true, select: false },
     phone: { type: String, default: "" },
     
-    // Platform Admin (You) - Can manage the SaaS itself
     isPlatformAdmin: { type: Boolean, default: false },
-    
-    // ❌ REMOVED: role, club (Moved to Membership)
   },
   { timestamps: true }
 );

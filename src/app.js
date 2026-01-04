@@ -12,7 +12,8 @@ const memberFeeRoutes = require("./routes/memberFee.routes");
 const donationRoutes = require("./routes/donations.routes");
 const expenseRoutes = require("./routes/expenses.routes");
 const financeRoutes = require("./routes/finance.routes");
-
+const archiveRoutes = require("./routes/archive.routes");
+const noticeRoutes = require("./routes/notice.routes");
 const app = express();
 
 /* ================= CORS ================= */
@@ -50,6 +51,8 @@ app.use("/api/v1/donations", donationRoutes);         // Public Donations
 app.use("/api/v1/expenses", expenseRoutes);     // Expenses
 app.use("/api/v1/finance", financeRoutes);      // Dashboard Summary
 app.use("/api/v1/audit", require("./routes/audit.routes"));
+app.use("/api/v1/archives", archiveRoutes);
+app.use("/api/v1/notices", noticeRoutes);
 /* ================= ROOT ================= */
 app.get("/", (req, res) => {
   res.send("Saraswati Club SaaS Backend (v1) is Running");

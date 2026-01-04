@@ -41,80 +41,70 @@ exports.getAllMembers = async (req, res) => {
 
 /**
  * @route POST /api/v1/members
- * @desc Add a NEW Member to the club
- * (Creates User if not exists, then links Membership)
+ * @desc Add a NEW Member (Supports System ID + Personal Email)
  */
 exports.addMember = async (req, res) => {
   try {
-    // 🔒 SECURITY CHECK: Only Admins can add members
     if (req.user.role !== "admin") {
-      return res.status(403).json({ message: "Access Denied. Only Admins can add members." });
+      return res.status(403).json({ message: "Access Denied. Admins only." });
     }
-    const { name, email, phone, role, password } = req.body;
+    
+    // 1. Destructure new field 'personalEmail'
+    const { name, email, personalEmail, phone, role, password } = req.body;
     const { clubId } = req.user;
 
+    // 'email' here is the System ID passed from frontend (e.g. user@club.com)
     if (!email || !name) {
-      return res.status(400).json({ message: "Name and Email are required" });
+      return res.status(400).json({ message: "Name and System Login ID are required" });
     }
 
-    // 1. Check if User already exists Globally
+    // 2. Check if System ID exists
     let user = await User.findOne({ email });
 
     if (!user) {
-      // Create new Global User
-      if (!password) {
-        return res.status(400).json({ message: "Password is required for new users" });
-      }
+      if (!password) return res.status(400).json({ message: "Password is required" });
+      
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash(password, salt);
 
+      // 3. Create User with BOTH emails
       user = await User.create({
         name,
-        email,
+        email,          // System Login ID
+        personalEmail,  // Real Gmail (Optional)
         phone,
         password: hashedPassword
       });
     }
 
-    // 2. Check if already a member of THIS club
-    const existingMembership = await Membership.findOne({ 
-      user: user._id, 
-      club: clubId 
-    });
-
+    // 4. Check Club Membership
+    const existingMembership = await Membership.findOne({ user: user._id, club: clubId });
     if (existingMembership) {
-      return res.status(400).json({ message: "User is already a member of this club" });
+      return res.status(400).json({ message: "User is already a member" });
     }
 
-    // 3. Create Membership Link
+    // 5. Link Membership
     const newMembership = await Membership.create({
       user: user._id,
       club: clubId,
       role: role || "member",
       status: "active"
     });
-    // ✅ FIX: Safely access the name
-    const memberName = user ? user.name : "Unknown Member";
-    // ✅ LOG: MEMBER ADDED
+
     await logAction({
       req,
       action: "MEMBER_ADDED",
-      target: `New Member: ${memberName}`,
-      details: { email, role: role || "member" }
+      target: `New Member: ${name}`,
+      details: { systemId: email, personalEmail, role }
     });
 
-    res.status(201).json({ 
-      success: true, 
-      message: "Member added successfully", 
-      data: newMembership 
-    });
+    res.status(201).json({ success: true, message: "Member added", data: newMembership });
 
   } catch (err) {
     console.error("Add Member Error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };
-
 /**
  * @route DELETE /api/v1/members/:id
  * @desc Remove a member from the club (Delete Membership)

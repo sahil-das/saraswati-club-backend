@@ -1,4 +1,3 @@
-// src/controllers/auth.controller.js
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -8,7 +7,7 @@ const Club = require("../models/Club");
 const Membership = require("../models/Membership");
 
 /**
- * REGISTER NEW FESTIVAL COMMITTEE (Simplified for Local DB)
+ * REGISTER NEW FESTIVAL COMMITTEE
  */
 exports.registerClub = async (req, res) => {
   try {
@@ -38,10 +37,10 @@ exports.registerClub = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, salt);
 
     // 4. Create USER
-    // (Note: We removed the array [] and session logic)
+    // Note: For the Club Admin, their 'email' acts as their System ID.
     const newUser = await User.create({
       name: adminName,
-      email,
+      email: email.toLowerCase(),
       password: hashedPassword,
       phone,
       isPlatformAdmin: false
@@ -53,7 +52,7 @@ exports.registerClub = async (req, res) => {
       code: clubCode,
       owner: newUser._id,
       settings: {
-        contributionFrequency: "weekly", // Default (will be set in Dashboard)
+        contributionFrequency: "weekly",
         defaultInstallmentCount: 52,
         defaultAmountPerInstallment: 0
       }
@@ -68,7 +67,7 @@ exports.registerClub = async (req, res) => {
     });
 
     // 7. Generate Token
-    const token = jwt.sign({ id: newUser._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+    const token = jwt.sign({ id: newUser._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
 
     res.status(201).json({
       success: true,
@@ -80,80 +79,98 @@ exports.registerClub = async (req, res) => {
 
   } catch (err) {
     console.error("Registration Error:", err);
-    // If we fail halfway, we should ideally delete the created user/club manually here
-    // But for dev, this is fine.
-    res.status(400).json({ message: err.message || "Registration failed" });
+    res.status(500).json({ message: "Registration failed", error: err.message });
   }
 };
 
-// ... Keep login and getMe functions as they are ...
+/**
+ * LOGIN USER (Supports System ID OR Personal Email)
+ */
 exports.login = async (req, res) => {
-    // ... (Use the previous code for login)
-    try {
-        const { email, password } = req.body;
-    
-        // 1. Authenticate User
-        const user = await User.findOne({ email }).select("+password");
-        if (!user || !(await bcrypt.compare(password, user.password))) {
-          return res.status(401).json({ message: "Invalid credentials" });
-        }
-    
-        // 2. Fetch Memberships (Which clubs do they belong to?)
-        const memberships = await Membership.find({ user: user._id, status: "active" })
-          .populate("club", "name code settings");
-    
-        if (memberships.length === 0) {
-          return res.status(403).json({ message: "You have an account, but you are not a member of any club." });
-        }
-    
-        // 3. Generate Token (User ID only)
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
-    
-        res.json({
-          success: true,
-          token,
-          user: { id: user._id, name: user.name, email: user.email },
-          // Frontend will use this list to show a "Select Club" screen
-          clubs: memberships.map(m => ({
-            clubId: m.club._id,
-            clubName: m.club.name,
-            clubCode: m.club.code,
-            role: m.role,
-            frequency: m.club.settings.contributionFrequency
-          }))
-        });
-    
-      } catch (err) {
-        console.error("Login Error:", err);
-        res.status(500).json({ message: "Server error" });
-      }
-};
+  try {
+    const { email, password } = req.body; // 'email' here is the input value (ID or Gmail)
 
-exports.getMe = async (req, res) => {
-    // ... (Use the previous code for getMe)
-    try {
-        const user = await User.findById(req.user.id);
-        const memberships = await Membership.find({ user: user._id, status: "active" })
-          .populate("club", "name code settings");
-    
-        res.json({
-          success: true,
-          user,
-          clubs: memberships.map(m => ({
-            clubId: m.club._id,
-            clubName: m.club.name,
-            clubCode: m.club.code,
-            role: m.role
-          }))
-        });
-      } catch (err) {
-        res.status(500).json({ message: "Server error" });
-      }
+    if (!email || !password) {
+      return res.status(400).json({ message: "Please provide ID and password" });
+    }
+
+    // ✅ FIXED: Check BOTH fields using $or
+    const user = await User.findOne({ 
+      $or: [
+        { email: email.toLowerCase() },          // System ID (rahul@club.com)
+        { personalEmail: email.toLowerCase() }   // Personal Gmail (rahul@gmail.com)
+      ] 
+    }).select("+password");
+
+    // 1. Check User Existence & Password
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    // 2. Fetch Memberships (Which clubs do they belong to?)
+    const memberships = await Membership.find({ user: user._id, status: "active" })
+      .populate("club", "name code settings");
+
+    if (memberships.length === 0) {
+      return res.status(403).json({ message: "You are not a member of any club." });
+    }
+
+    // 3. Generate Token
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
+
+    res.json({
+      success: true,
+      token,
+      user: { 
+        id: user._id, 
+        name: user.name, 
+        email: user.email, 
+        phone: user.phone 
+      },
+      // Frontend uses this list to auto-select or show selection screen
+      clubs: memberships.map(m => ({
+        clubId: m.club._id,
+        clubName: m.club.name,
+        clubCode: m.club.code,
+        role: m.role,
+        frequency: m.club.settings?.contributionFrequency || "weekly"
+      }))
+    });
+
+  } catch (err) {
+    console.error("Login Error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
 };
 
 /**
- * @desc Update User Profile
- * @route PUT /api/v1/auth/profile
+ * GET CURRENT USER
+ */
+exports.getMe = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    const memberships = await Membership.find({ user: user._id, status: "active" })
+      .populate("club", "name code settings");
+
+    res.json({
+      success: true,
+      user,
+      clubs: memberships.map(m => ({
+        clubId: m.club._id,
+        clubName: m.club.name,
+        clubCode: m.club.code,
+        role: m.role,
+        frequency: m.club.settings?.contributionFrequency || "weekly"
+      }))
+    });
+  } catch (err) {
+    console.error("GetMe Error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+/**
+ * UPDATE PROFILE
  */
 exports.updateProfile = async (req, res) => {
   try {
@@ -164,11 +181,11 @@ exports.updateProfile = async (req, res) => {
       req.user.id,
       { name, phone, email },
       { new: true, runValidators: true }
-    ).select("-password"); // Don't return password
+    ).select("-password");
 
     res.json({
       success: true,
-      data: user,
+      data: user, // 🛑 Frontend expects { data: user } structure
       message: "Profile updated successfully"
     });
   } catch (err) {
@@ -178,35 +195,28 @@ exports.updateProfile = async (req, res) => {
 };
 
 /**
- * @desc Change Password
- * @route PUT /api/v1/auth/change-password
+ * CHANGE PASSWORD
  */
 exports.changePassword = async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body;
 
-    // 🛑 FIX 1: Validate Inputs First
     if (!oldPassword || !newPassword) {
       return res.status(400).json({ message: "Please provide both old and new passwords." });
     }
 
-    // 1. Get user with password
     const user = await User.findById(req.user.id).select("+password");
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    // 2. Verify Old Password
-    // This line was crashing because oldPassword was undefined
     const isMatch = await bcrypt.compare(oldPassword, user.password);
     
     if (!isMatch) {
       return res.status(400).json({ message: "Incorrect old password" });
     }
 
-    // 3. Hash New Password
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(newPassword, salt);
 
-    // 4. Save
     await user.save();
 
     res.json({ success: true, message: "Password updated successfully" });
