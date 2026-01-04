@@ -148,3 +148,55 @@ exports.payInstallment = async (req, res) => {
     res.status(500).json({ message: "Payment Failed" });
   }
 };
+
+
+/**
+ * @desc Get ALL Payments for the Active Year (For Reports)
+ * @route GET /api/v1/subscriptions/payments
+ */
+exports.getAllPayments = async (req, res) => {
+  try {
+    const { clubId } = req.user;
+
+    // 1. Get Active Year
+    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
+    if (!activeYear) return res.json({ success: true, data: [] });
+
+    // 2. Fetch all subscriptions for this year
+    const subs = await Subscription.find({ club: clubId, year: activeYear._id })
+      .populate({
+        path: "member",
+        populate: { path: "user", select: "name" }
+      });
+
+    // 3. Extract PAID installments into a flat list
+    let allPayments = [];
+
+    subs.forEach(sub => {
+      const memberName = sub.member?.user?.name || "Unknown Member";
+
+      sub.installments.forEach(inst => {
+        if (inst.isPaid) {
+          allPayments.push({
+            subscriptionId: sub._id,
+            memberId: sub.member?._id,
+            memberName: memberName,
+            amount: inst.amountExpected,
+            date: inst.paidDate || sub.updatedAt, // Fallback date
+            weekNumber: inst.number,
+            type: "subscription"
+          });
+        }
+      });
+    });
+
+    // Sort by Date (Most recent first)
+    allPayments.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    res.json({ success: true, data: allPayments });
+
+  } catch (err) {
+    console.error("Fetch Payments Error:", err);
+    res.status(500).json({ message: "Server Error" });
+  }
+};

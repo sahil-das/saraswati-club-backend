@@ -16,5 +16,8 @@ router.get("/summary", controller.getFeeSummary);
 
 // Delete
 router.delete("/:id", controller.deletePayment);
+
+// Get Member-specific Fees
 router.get("/member/:userId", controller.getMemberFees);
+
 module.exports = router;

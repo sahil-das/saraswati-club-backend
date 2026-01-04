@@ -5,6 +5,7 @@ const authMiddleware = require("../middleware/auth.middleware");
 
 router.use(authMiddleware);
 
+router.get("/payments", controller.getAllPayments);
 // Get a member's card (Auto-creates if missing)
 router.get("/member/:memberId", controller.getMemberSubscription);
 
