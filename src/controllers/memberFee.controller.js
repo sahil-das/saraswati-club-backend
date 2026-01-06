@@ -1,27 +1,19 @@
 const MemberFee = require("../models/MemberFee");
 const FestivalYear = require("../models/FestivalYear");
 const Membership = require("../models/Membership");
-const User = require("../models/User"); // 👈 ADDED THIS IMPORT
+const User = require("../models/User");
 const { logAction } = require("../utils/auditLogger");
 
-/**
- * @route POST /api/v1/member-fees
- * @desc Record a payment (Chanda)
- */
 exports.createPayment = async (req, res) => {
   try {
     const { userId, amount, notes } = req.body;
     const { clubId, id: adminId, role } = req.user;
 
-    // ✅ AUTH CHECK: Only Admins can collect money
-    if (role !== 'admin') {
-      return res.status(403).json({ message: "Access denied. Admins only." });
-    }
+    if (role !== 'admin') return res.status(403).json({ message: "Admins only." });
 
     const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
     if (!activeYear) return res.status(404).json({ message: "No active festival year." });
 
-    // ✅ FETCH USER NAME FOR LOGS (Now this will work)
     const userObj = await User.findById(userId);
     const memberName = userObj ? userObj.name : "Unknown Member";
 
@@ -34,7 +26,6 @@ exports.createPayment = async (req, res) => {
       notes
     });
   
-    // ✅ LOG THE ACTION
     await logAction({
       req,
       action: "PAYMENT_COLLECTED",
@@ -44,15 +35,10 @@ exports.createPayment = async (req, res) => {
     
     res.status(201).json({ success: true, message: "Payment recorded", data: fee });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 };
 
-/**
- * @route GET /api/v1/member-fees
- * @desc Get raw list of transactions (for history/logs)
- */
 exports.getAllFees = async (req, res) => {
   try {
     const { clubId } = req.user;
@@ -71,50 +57,51 @@ exports.getAllFees = async (req, res) => {
 };
 
 /**
- * @route GET /api/v1/member-fees/summary
- * @desc Get All Members with their Total Paid status (For Collection Matrix)
+ * @desc Get All Members with their Total Paid status
+ * ✅ FIX: Aggregation returns Paise, needs conversion
  */
 exports.getFeeSummary = async (req, res) => {
   try {
     const { clubId } = req.user;
 
-    // 1. Active Year
     const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
     if (!activeYear) return res.status(400).json({ message: "No active festival year." });
 
-    // 2. Get All Members
     const memberships = await Membership.find({ club: clubId }).populate("user", "name email phone");
     
-    // 3. Aggregate Fees for this Year
+    // Aggregation returns RAW INTEGERS (Paise)
     const fees = await MemberFee.aggregate([
       { $match: { club: clubId, year: activeYear._id } },
       { $group: { 
           _id: "$user", 
-          totalPaid: { $sum: "$amount" },
+          totalPaid: { $sum: "$amount" }, // 👈 Raw Paise (e.g. 5050)
           lastPaidAt: { $max: "$createdAt" },
           count: { $sum: 1 }
         } 
       }
     ]);
 
-    // 4. Map Fees to Members
     const feeMap = {};
     fees.forEach(f => { feeMap[f._id.toString()] = f; });
 
     const summary = memberships.map(m => {
         const userId = m.user._id.toString();
         const feeData = feeMap[userId];
+        
+        // ✅ FIX: Divide by 100 to convert Paise to Rupees
+        const rawTotal = feeData?.totalPaid || 0;
+        const finalTotal = rawTotal / 100;
+
         return {
             memberId: userId,
             name: m.user.name,
             email: m.user.email,
-            totalPaid: feeData?.totalPaid || 0,
+            totalPaid: finalTotal,
             lastPaidAt: feeData?.lastPaidAt || null,
             transactionCount: feeData?.count || 0
         };
     });
 
-    // Sort: Unpaid first, then by Name
     summary.sort((a, b) => {
         if (a.totalPaid === 0 && b.totalPaid > 0) return -1;
         if (a.totalPaid > 0 && b.totalPaid === 0) return 1;
@@ -129,39 +116,28 @@ exports.getFeeSummary = async (req, res) => {
   }
 };
 
-/**
- * @route DELETE /api/v1/member-fees/:id
- */
 exports.deletePayment = async (req, res) => {
   try {
-    // 1. Find the fee first (so we can log what we are deleting)
     const fee = await MemberFee.findOne({ _id: req.params.id, club: req.user.clubId })
-      .populate("user", "name"); // Get name for the log
+      .populate("user", "name");
 
     if (!fee) return res.status(404).json({ message: "Record not found" });
 
-    // 2. Delete it
     await MemberFee.findByIdAndDelete(fee._id);
 
-    // ✅ LOG THE DELETION
     await logAction({
       req,
       action: "PAYMENT_DELETED",
       target: `Deleted Chanda: ${fee.user?.name || "Unknown User"}`,
-      details: { 
-        amount: fee.amount, 
-        originalDate: fee.createdAt 
-      }
+      details: { amount: fee.amount, originalDate: fee.createdAt }
     });
 
     res.json({ success: true, message: "Record deleted" });
   } catch (err) {
-    console.error(err); // 👈 Added error logging
     res.status(500).json({ message: "Server error" });
   }
 };
 
-// ✅ NEW: Get fees for a specific member (for MemberDetails page)
 exports.getMemberFees = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -176,7 +152,8 @@ exports.getMemberFees = async (req, res) => {
       user: userId 
     }).populate("collectedBy", "name");
 
-    const total = fees.reduce((sum, f) => sum + f.amount, 0);
+    // Mongoose documents handle the conversion, but reducing logic needs care
+    const total = fees.reduce((sum, f) => sum + Number(f.amount), 0);
 
     res.json({ 
       success: true, 
@@ -187,7 +164,6 @@ exports.getMemberFees = async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 };

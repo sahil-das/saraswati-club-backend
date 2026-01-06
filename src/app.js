@@ -1,11 +1,13 @@
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
-const rateLimit = require("express-rate-limit"); // 👈 NEW
 const connectDB = require("./config/db");
 const { PORT } = require("./config/env");
 
-// Routes
+// Import the Global Limiter
+const { globalLimiter } = require("./middleware/limiters");
+
+// Import Routes
 const authRoutes = require("./routes/auth.routes");
 const membershipRoutes = require("./routes/membership.routes");
 const festivalYearRoutes = require("./routes/festivalYear.routes");
@@ -19,29 +21,12 @@ const noticeRoutes = require("./routes/notice.routes");
 
 const app = express();
 
-/* ================= SECURITY ================= */
+/* ================= 1. SECURITY HEADERS ================= */
 app.use(helmet());
 
-// 1. Global Rate Limiter (General DDoS Protection)
-// Allow 100 requests per 15 minutes per IP
-const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, 
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message: "Too many requests, please try again later." }
-});
-app.use(globalLimiter);
-
-// 2. Auth Rate Limiter (Brute Force Protection)
-// Allow only 5 login attempts per hour per IP
-const authLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, 
-  max: 5,
-  message: { message: "Too many login attempts. Please try again in an hour." }
-});
-
-/* ================= CONFIG ================= */
+/* ================= 2. CORS (MUST BE BEFORE LIMITERS) ================= */
+// If we don't put this first, the limiter blocks the "Preflight" check 
+// and the browser throws a CORS error instead of a 429 error.
 const allowedOrigins = process.env.CORS_ORIGIN 
   ? process.env.CORS_ORIGIN.split(",") 
   : ["http://localhost:5173"];
@@ -60,15 +45,16 @@ app.use(
   })
 );
 
+/* ================= 3. RATE LIMITER ================= */
+app.use(globalLimiter);
+
+/* ================= 4. PARSERS ================= */
 app.use(express.json({ limit: "10kb" }));
 
-/* ================= DB ================= */
+/* ================= 5. DB & ROUTES ================= */
 connectDB();
 
-/* ================= ROUTES ================= */
-// Apply strict limiter ONLY to auth routes
-app.use("/api/v1/auth", authLimiter, authRoutes); // 👈 Applied here
-
+app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/members", membershipRoutes);
 app.use("/api/v1/years", festivalYearRoutes);
 app.use("/api/v1/subscriptions", subscriptionRoutes);
@@ -81,12 +67,14 @@ app.use("/api/v1/archives", archiveRoutes);
 app.use("/api/v1/notices", noticeRoutes);
 
 /* ================= ERROR HANDLING ================= */
-app.get("/", (req, res) => res.send("Saraswati Club Backend (Secured)"));
+app.get("/", (req, res) => {
+  res.send("Saraswati Club SaaS Backend (v1) is Secure & Running");
+});
 
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ 
-    message: "Internal Server Error",
+    message: "Internal Server Error", 
     error: process.env.NODE_ENV === "development" ? err.message : undefined 
   });
 });

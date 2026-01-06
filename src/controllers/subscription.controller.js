@@ -1,45 +1,36 @@
 const Subscription = require("../models/Subscription");
 const FestivalYear = require("../models/FestivalYear");
 const Membership = require("../models/Membership");
-const User = require("../models/User"); // Added for safety
 const { logAction } = require("../utils/auditLogger");
 
 /**
- * @desc Get Subscription Card (Read-Only Version)
- * Does NOT auto-create records to prevent GET-request write side-effects.
+ * @desc Get Subscription Card & Self-Heal Data
  */
 exports.getMemberSubscription = async (req, res) => {
   try {
     const { memberId } = req.params;
     const { clubId } = req.user;
 
-    // 1. Get Active Year
     const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
     if (!activeYear) return res.status(400).json({ message: "No active year found." });
 
-    // 2. Fetch Membership & User Details
     const memberShip = await Membership.findById(memberId).populate("user");
     if (!memberShip) return res.status(404).json({ message: "Member not found" });
 
     const memberName = memberShip.user ? memberShip.user.name : "Unknown Member";
-    const memberUserId = memberShip.user ? memberShip.user._id : null;
+    const memberUserId = memberShip.user ? memberShip.user._id : null; 
 
-    // 3. Find Subscription (Read Only)
     let sub = await Subscription.findOne({ 
       club: clubId, 
       year: activeYear._id, 
       member: memberId 
     });
 
-    const targetAmount = activeYear.amountPerInstallment || 0;
+    // ✅ FIX: Ensure Target Amount is a Number (Mongoose getter returns String "50.00")
+    const targetAmount = Number(activeYear.amountPerInstallment) || 0;
     const targetCount = activeYear.totalInstallments || 52;
-    const totalDueCalc = targetCount * targetAmount;
-
-    // 4. Construct Response Data (Virtual if missing)
-    let responseData;
 
     if (!sub) {
-      // Return "Virtual" Subscription for UI display
       const installments = [];
       for (let i = 1; i <= targetCount; i++) {
         installments.push({
@@ -48,22 +39,32 @@ exports.getMemberSubscription = async (req, res) => {
           isPaid: false
         });
       }
-      responseData = {
-        _id: null, // Indicates it's not saved yet
+
+      sub = await Subscription.create({
+        club: clubId,
+        year: activeYear._id,
         member: memberId,
-        installments,
-        totalPaid: 0,
-        totalDue: totalDueCalc
-      };
+        installments: installments,
+        totalDue: targetCount * targetAmount
+      });
     } else {
-      // Return Existing Data
-      responseData = sub;
+      const needsUpdate = sub.installments.some(i => Number(i.amountExpected) !== targetAmount);
+      
+      if (needsUpdate && targetAmount > 0) {
+        sub.installments.forEach(i => { i.amountExpected = targetAmount; });
+        
+        const paidCount = sub.installments.filter(i => i.isPaid).length;
+        sub.totalPaid = paidCount * targetAmount;
+        sub.totalDue = (sub.installments.length * targetAmount) - sub.totalPaid;
+        
+        await sub.save();
+      }
     }
 
     res.json({
       success: true,
       data: {
-        subscription: responseData,
+        subscription: sub,
         memberName: memberName,
         memberUserId: memberUserId,
         rules: {
@@ -81,110 +82,57 @@ exports.getMemberSubscription = async (req, res) => {
 };
 
 /**
- * @desc Pay Installment (Atomic / Thread-Safe)
+ * @desc Pay Installment
  */
 exports.payInstallment = async (req, res) => {
   try {
-    const { subscriptionId, installmentNumber, memberId } = req.body;
-    const { clubId, id: userId } = req.user;
+    const { subscriptionId, installmentNumber } = req.body;
+    
+    const sub = await Subscription.findById(subscriptionId).populate("year");
+    if (!sub) return res.status(404).json({ message: "Subscription not found" });
 
-    // 1. Validate Context
-    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
-    if (!activeYear) return res.status(400).json({ message: "No active year." });
-    if (activeYear.subscriptionFrequency === 'none') {
-       return res.status(400).json({ message: "Subscriptions disabled for this year." });
+    if (sub.year.subscriptionFrequency === 'none') {
+       return res.status(400).json({ message: "Subscriptions are disabled for this year." });
     }
+
     if (req.user.role !== "admin") {
       return res.status(403).json({ message: "Only Admins can update payments." });
     }
 
-    const amount = activeYear.amountPerInstallment || 0;
+    const installment = sub.installments.find(i => i.number === installmentNumber);
+    if (!installment) return res.status(404).json({ message: "Invalid Installment" });
 
-    // 2. Ensure Subscription Exists (Lazy Creation)
-    // If ID is missing/null, we must find or create the sub first using atomic upsert
-    let targetSubId = subscriptionId;
+    // Toggle Status
+    const newStatus = !installment.isPaid;
+    installment.isPaid = newStatus;
+    installment.paidDate = newStatus ? new Date() : null;
+    installment.collectedBy = newStatus ? req.user.id : null;
+
+    // ✅ FIX: Recalculate Totals using Number() to prevent string concatenation
+    let newPaid = 0;
+    let newDue = 0;
     
-    if (!targetSubId) {
-      if (!memberId) return res.status(400).json({ message: "Member ID required for first payment." });
-      
-      // Initialize installments
-      const installments = Array.from({ length: activeYear.totalInstallments }, (_, k) => ({
-        number: k + 1,
-        amountExpected: amount,
-        isPaid: false
-      }));
-
-      const newSub = await Subscription.findOneAndUpdate(
-        { club: clubId, year: activeYear._id, member: memberId },
-        { 
-           $setOnInsert: { 
-             installments, 
-             totalPaid: 0, 
-             totalDue: activeYear.totalInstallments * amount 
-           } 
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      );
-      targetSubId = newSub._id;
-    }
-
-    // 3. ATOMIC TOGGLE LOGIC
-    // Attempt to SET PAID (Matches if currently false)
-    let updatedSub = await Subscription.findOneAndUpdate(
-      { 
-        _id: targetSubId, 
-        installments: { $elemMatch: { number: installmentNumber, isPaid: false } } 
-      },
-      {
-        $set: { 
-          "installments.$.isPaid": true, 
-          "installments.$.paidDate": new Date(),
-          "installments.$.collectedBy": userId
-        },
-        $inc: { totalPaid: amount, totalDue: -amount }
-      },
-      { new: true }
-    );
-
-    let action = "SUBSCRIPTION_PAID";
-
-    // If update failed, it might be because it's ALREADY PAID. Try to REVOKE.
-    if (!updatedSub) {
-      updatedSub = await Subscription.findOneAndUpdate(
-        { 
-          _id: targetSubId, 
-          installments: { $elemMatch: { number: installmentNumber, isPaid: true } } 
-        },
-        {
-          $set: { 
-            "installments.$.isPaid": false, 
-            "installments.$.paidDate": null,
-            "installments.$.collectedBy": null
-          },
-          $inc: { totalPaid: -amount, totalDue: amount }
-        },
-        { new: true }
-      );
-      action = "SUBSCRIPTION_REVOKED";
-    }
-
-    if (!updatedSub) {
-      return res.status(404).json({ message: "Installment not found or state conflict." });
-    }
-
-    // ✅ LOG THE ACTION
-    // We populate only what we need for the log
-    await updatedSub.populate({ path: "member", populate: { path: "user", select: "name" }});
-    const memberName = updatedSub.member?.user?.name || "Member";
-    
-    await logAction({
-      req,
-      action: action,
-      target: `Sub: ${memberName} (Week #${installmentNumber})`,
-      details: { amount: amount, status: action === "SUBSCRIPTION_PAID" ? "Paid" : "Unpaid" }
+    sub.installments.forEach(i => {
+        // Mongoose getter returns string "50.00", so we MUST wrap in Number()
+        const amt = Number(i.amountExpected);
+        if(i.isPaid) newPaid += amt;
+        else newDue += amt;
     });
 
-    res.json({ success: true, data: updatedSub });
+    sub.totalPaid = newPaid;
+    sub.totalDue = newDue;
+
+    await sub.save();
+
+    const memberName = sub.member?.user?.name || "Member";
+    await logAction({
+      req,
+      action: newStatus ? "SUBSCRIPTION_PAID" : "SUBSCRIPTION_REVOKED",
+      target: `Sub: ${memberName} (Week #${installmentNumber})`,
+      details: { amount: Number(installment.amountExpected), status: newStatus ? "Paid" : "Unpaid" }
+    });
+
+    res.json({ success: true, data: sub });
 
   } catch (err) {
     console.error(err);
@@ -193,7 +141,7 @@ exports.payInstallment = async (req, res) => {
 };
 
 /**
- * @desc Get ALL Payments (Unchanged logic, just ensure safety)
+ * @desc Get ALL Payments
  */
 exports.getAllPayments = async (req, res) => {
   try {
@@ -208,6 +156,7 @@ exports.getAllPayments = async (req, res) => {
       });
 
     let allPayments = [];
+
     subs.forEach(sub => {
       const memberName = sub.member?.user?.name || "Unknown Member";
       sub.installments.forEach(inst => {
@@ -216,7 +165,8 @@ exports.getAllPayments = async (req, res) => {
             subscriptionId: sub._id,
             memberId: sub.member?._id,
             memberName: memberName,
-            amount: inst.amountExpected,
+            // ✅ FIX: Force Number conversion
+            amount: Number(inst.amountExpected),
             date: inst.paidDate || sub.updatedAt,
             weekNumber: inst.number,
             type: "subscription"
@@ -229,7 +179,6 @@ exports.getAllPayments = async (req, res) => {
     res.json({ success: true, data: allPayments });
 
   } catch (err) {
-    console.error("Fetch Payments Error:", err);
     res.status(500).json({ message: "Server Error" });
   }
-};
+}; 
