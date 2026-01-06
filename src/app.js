@@ -18,7 +18,6 @@ const expenseRoutes = require("./routes/expenses.routes");
 const financeRoutes = require("./routes/finance.routes");
 const archiveRoutes = require("./routes/archive.routes");
 const noticeRoutes = require("./routes/notice.routes");
-
 const app = express();
 
 /* ================= 1. SECURITY HEADERS ================= */
@@ -65,8 +64,7 @@ app.use("/api/v1/finance", financeRoutes);
 app.use("/api/v1/audit", require("./routes/audit.routes"));
 app.use("/api/v1/archives", archiveRoutes);
 app.use("/api/v1/notices", noticeRoutes);
-
-/* ================= ERROR HANDLING ================= */
+/* ================= ROOT ================= */
 app.get("/", (req, res) => {
   res.send("Saraswati Club SaaS Backend (v1) is Secure & Running");
 });
