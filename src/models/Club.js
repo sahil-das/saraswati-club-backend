@@ -32,7 +32,10 @@ const clubSchema = new mongoose.Schema({
     },
     // Optional: Default amount per slot (e.g., 20 Rs)
     defaultAmountPerInstallment: {
+
       type: Number,
+      get: require("../utils/mongooseMoney").get,
+      set: require("../utils/mongooseMoney").set,
       default: 0
     },
     currency: { type: String, default: "INR" }

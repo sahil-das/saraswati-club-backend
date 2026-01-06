@@ -1,10 +1,12 @@
 const Subscription = require("../models/Subscription");
 const FestivalYear = require("../models/FestivalYear");
 const Membership = require("../models/Membership");
-const User = require("../models/User");
+const User = require("../models/User"); // Added for safety
 const { logAction } = require("../utils/auditLogger");
+
 /**
- * @desc Get Subscription Card & Self-Heal Data
+ * @desc Get Subscription Card (Read-Only Version)
+ * Does NOT auto-create records to prevent GET-request write side-effects.
  */
 exports.getMemberSubscription = async (req, res) => {
   try {
@@ -13,29 +15,31 @@ exports.getMemberSubscription = async (req, res) => {
 
     // 1. Get Active Year
     const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
-    if (!activeYear) return res.status(400).json({ message: "No active year found. Please start a year in Dashboard." });
+    if (!activeYear) return res.status(400).json({ message: "No active year found." });
 
     // 2. Fetch Membership & User Details
     const memberShip = await Membership.findById(memberId).populate("user");
     if (!memberShip) return res.status(404).json({ message: "Member not found" });
 
-    // ✅ FIX: Capture User ID and Name safely
     const memberName = memberShip.user ? memberShip.user.name : "Unknown Member";
-    const memberUserId = memberShip.user ? memberShip.user._id : null; 
+    const memberUserId = memberShip.user ? memberShip.user._id : null;
 
-    // 3. Find Subscription
+    // 3. Find Subscription (Read Only)
     let sub = await Subscription.findOne({ 
       club: clubId, 
       year: activeYear._id, 
       member: memberId 
     });
 
-    // 4. AUTO-CREATE or AUTO-FIX (Self-Healing Logic 🪄)
     const targetAmount = activeYear.amountPerInstallment || 0;
     const targetCount = activeYear.totalInstallments || 52;
+    const totalDueCalc = targetCount * targetAmount;
+
+    // 4. Construct Response Data (Virtual if missing)
+    let responseData;
 
     if (!sub) {
-      // Create New
+      // Return "Virtual" Subscription for UI display
       const installments = [];
       for (let i = 1; i <= targetCount; i++) {
         installments.push({
@@ -44,35 +48,24 @@ exports.getMemberSubscription = async (req, res) => {
           isPaid: false
         });
       }
-
-      sub = await Subscription.create({
-        club: clubId,
-        year: activeYear._id,
+      responseData = {
+        _id: null, // Indicates it's not saved yet
         member: memberId,
-        installments: installments,
-        totalDue: targetCount * targetAmount
-      });
+        installments,
+        totalPaid: 0,
+        totalDue: totalDueCalc
+      };
     } else {
-      // 5. DATA REPAIR
-      const needsUpdate = sub.installments.some(i => i.amountExpected !== targetAmount);
-      
-      if (needsUpdate && targetAmount > 0) {
-        sub.installments.forEach(i => { i.amountExpected = targetAmount; });
-        
-        const paidCount = sub.installments.filter(i => i.isPaid).length;
-        sub.totalPaid = paidCount * targetAmount;
-        sub.totalDue = (sub.installments.length * targetAmount) - sub.totalPaid;
-        
-        await sub.save();
-      }
+      // Return Existing Data
+      responseData = sub;
     }
 
     res.json({
       success: true,
       data: {
-        subscription: sub,
+        subscription: responseData,
         memberName: memberName,
-        memberUserId: memberUserId, // 👈 CRITICAL FIX: Sending User ID to Frontend
+        memberUserId: memberUserId,
         rules: {
           name: activeYear.name,
           frequency: activeYear.subscriptionFrequency,
@@ -88,60 +81,110 @@ exports.getMemberSubscription = async (req, res) => {
 };
 
 /**
- * @desc Pay Installment
+ * @desc Pay Installment (Atomic / Thread-Safe)
  */
 exports.payInstallment = async (req, res) => {
   try {
-    const { subscriptionId, installmentNumber } = req.body;
-    
-    const sub = await Subscription.findById(subscriptionId).populate("year");
-    if (!sub) return res.status(404).json({ message: "Subscription not found" });
+    const { subscriptionId, installmentNumber, memberId } = req.body;
+    const { clubId, id: userId } = req.user;
 
-    // 🔒 SECURITY CHECK: If Year Frequency is 'none', block payment
-    if (sub.year.subscriptionFrequency === 'none') {
-       return res.status(400).json({ 
-         message: "This financial year is set to 'Donations Only'. Subscriptions are disabled." 
-       });
+    // 1. Validate Context
+    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
+    if (!activeYear) return res.status(400).json({ message: "No active year." });
+    if (activeYear.subscriptionFrequency === 'none') {
+       return res.status(400).json({ message: "Subscriptions disabled for this year." });
     }
-
-    // 🔒 SECURITY CHECK
     if (req.user.role !== "admin") {
       return res.status(403).json({ message: "Only Admins can update payments." });
     }
 
-    const installment = sub.installments.find(i => i.number === installmentNumber);
-    if (!installment) return res.status(404).json({ message: "Invalid Installment" });
+    const amount = activeYear.amountPerInstallment || 0;
 
-    // Toggle Status
-    const newStatus = !installment.isPaid;
-    installment.isPaid = newStatus;
-    installment.paidDate = newStatus ? new Date() : null;
-    installment.collectedBy = newStatus ? req.user.id : null;
-
-    // Recalculate Totals
-    let newPaid = 0;
-    let newDue = 0;
+    // 2. Ensure Subscription Exists (Lazy Creation)
+    // If ID is missing/null, we must find or create the sub first using atomic upsert
+    let targetSubId = subscriptionId;
     
-    sub.installments.forEach(i => {
-        if(i.isPaid) newPaid += i.amountExpected;
-        else newDue += i.amountExpected;
-    });
+    if (!targetSubId) {
+      if (!memberId) return res.status(400).json({ message: "Member ID required for first payment." });
+      
+      // Initialize installments
+      const installments = Array.from({ length: activeYear.totalInstallments }, (_, k) => ({
+        number: k + 1,
+        amountExpected: amount,
+        isPaid: false
+      }));
 
-    sub.totalPaid = newPaid;
-    sub.totalDue = newDue;
+      const newSub = await Subscription.findOneAndUpdate(
+        { club: clubId, year: activeYear._id, member: memberId },
+        { 
+           $setOnInsert: { 
+             installments, 
+             totalPaid: 0, 
+             totalDue: activeYear.totalInstallments * amount 
+           } 
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+      targetSubId = newSub._id;
+    }
 
-    await sub.save();
+    // 3. ATOMIC TOGGLE LOGIC
+    // Attempt to SET PAID (Matches if currently false)
+    let updatedSub = await Subscription.findOneAndUpdate(
+      { 
+        _id: targetSubId, 
+        installments: { $elemMatch: { number: installmentNumber, isPaid: false } } 
+      },
+      {
+        $set: { 
+          "installments.$.isPaid": true, 
+          "installments.$.paidDate": new Date(),
+          "installments.$.collectedBy": userId
+        },
+        $inc: { totalPaid: amount, totalDue: -amount }
+      },
+      { new: true }
+    );
+
+    let action = "SUBSCRIPTION_PAID";
+
+    // If update failed, it might be because it's ALREADY PAID. Try to REVOKE.
+    if (!updatedSub) {
+      updatedSub = await Subscription.findOneAndUpdate(
+        { 
+          _id: targetSubId, 
+          installments: { $elemMatch: { number: installmentNumber, isPaid: true } } 
+        },
+        {
+          $set: { 
+            "installments.$.isPaid": false, 
+            "installments.$.paidDate": null,
+            "installments.$.collectedBy": null
+          },
+          $inc: { totalPaid: -amount, totalDue: amount }
+        },
+        { new: true }
+      );
+      action = "SUBSCRIPTION_REVOKED";
+    }
+
+    if (!updatedSub) {
+      return res.status(404).json({ message: "Installment not found or state conflict." });
+    }
 
     // ✅ LOG THE ACTION
-    const memberName = sub.member?.user?.name || "Member";
+    // We populate only what we need for the log
+    await updatedSub.populate({ path: "member", populate: { path: "user", select: "name" }});
+    const memberName = updatedSub.member?.user?.name || "Member";
+    
     await logAction({
       req,
-      action: newStatus ? "SUBSCRIPTION_PAID" : "SUBSCRIPTION_REVOKED",
+      action: action,
       target: `Sub: ${memberName} (Week #${installmentNumber})`,
-      details: { amount: installment.amountExpected, status: newStatus ? "Paid" : "Unpaid" }
+      details: { amount: amount, status: action === "SUBSCRIPTION_PAID" ? "Paid" : "Unpaid" }
     });
 
-    res.json({ success: true, data: sub });
+    res.json({ success: true, data: updatedSub });
 
   } catch (err) {
     console.error(err);
@@ -149,32 +192,24 @@ exports.payInstallment = async (req, res) => {
   }
 };
 
-
 /**
- * @desc Get ALL Payments for the Active Year (For Reports)
- * @route GET /api/v1/subscriptions/payments
+ * @desc Get ALL Payments (Unchanged logic, just ensure safety)
  */
 exports.getAllPayments = async (req, res) => {
   try {
     const { clubId } = req.user;
-
-    // 1. Get Active Year
     const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
     if (!activeYear) return res.json({ success: true, data: [] });
 
-    // 2. Fetch all subscriptions for this year
     const subs = await Subscription.find({ club: clubId, year: activeYear._id })
       .populate({
         path: "member",
         populate: { path: "user", select: "name" }
       });
 
-    // 3. Extract PAID installments into a flat list
     let allPayments = [];
-
     subs.forEach(sub => {
       const memberName = sub.member?.user?.name || "Unknown Member";
-
       sub.installments.forEach(inst => {
         if (inst.isPaid) {
           allPayments.push({
@@ -182,7 +217,7 @@ exports.getAllPayments = async (req, res) => {
             memberId: sub.member?._id,
             memberName: memberName,
             amount: inst.amountExpected,
-            date: inst.paidDate || sub.updatedAt, // Fallback date
+            date: inst.paidDate || sub.updatedAt,
             weekNumber: inst.number,
             type: "subscription"
           });
@@ -190,9 +225,7 @@ exports.getAllPayments = async (req, res) => {
       });
     });
 
-    // Sort by Date (Most recent first)
     allPayments.sort((a, b) => new Date(b.date) - new Date(a.date));
-
     res.json({ success: true, data: allPayments });
 
   } catch (err) {
