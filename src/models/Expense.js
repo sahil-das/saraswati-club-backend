@@ -23,4 +23,5 @@ const expenseSchema = new mongoose.Schema({
   recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
 }, { timestamps: true });
 
+expenseSchema.index({ club: 1, year: 1, date: -1 }); 
 module.exports = mongoose.model("Expense", expenseSchema);

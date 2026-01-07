@@ -4,17 +4,21 @@ const Membership = require("../models/Membership");
 const User = require("../models/User"); 
 const { logAction } = require("../utils/auditLogger");
 const { toClient } = require("../utils/mongooseMoney"); // 👈 Ensure this is imported
-
+const mongoose = require("mongoose");
 /**
  * @route POST /api/v1/member-fees
  * @desc Record a payment (Chanda)
  */
 exports.createPayment = async (req, res) => {
   try {
-    const { userId, amount, notes } = req.body;
+    const { userId: passedId, amount, notes } = req.body;
     const { clubId, id: adminId, role } = req.user;
 
-    // ✅ AUTH CHECK: Only Admins can collect money
+    // ✅ 1. Input Validation (Stop "undefined" errors here)
+    if (!passedId || passedId === "undefined") {
+        return res.status(400).json({ message: "Member ID is required." });
+    }
+
     if (role !== 'admin') {
       return res.status(403).json({ message: "Access denied. Admins only." });
     }
@@ -22,15 +26,38 @@ exports.createPayment = async (req, res) => {
     const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
     if (!activeYear) return res.status(404).json({ message: "No active festival year." });
 
-    // ✅ FETCH USER NAME FOR LOGS
-    const userObj = await User.findById(userId);
-    const memberName = userObj ? userObj.name : "Unknown Member";
+    // ✅ 2. Resolve Real User
+    let realUserId = passedId;
+    let memberName = "Unknown Member";
 
+    // Check if it's a valid ObjectId to prevent CastErrors during lookup
+    if (!mongoose.Types.ObjectId.isValid(passedId)) {
+        return res.status(400).json({ message: "Invalid Member ID format" });
+    }
+
+    // Attempt to find Membership first
+    const membership = await Membership.findById(passedId).populate("user");
+
+    if (membership && membership.user) {
+        realUserId = membership.user._id;
+        memberName = membership.user.name;
+    } else {
+        // Fallback: Check if it's a direct User ID
+        const userObj = await User.findById(passedId);
+        if (userObj) {
+            memberName = userObj.name;
+            realUserId = userObj._id;
+        } else {
+            return res.status(404).json({ message: "Member not found" });
+        }
+    }
+
+    // ✅ 3. Create Fee (Now guaranteed to have a valid User ID)
     const fee = await MemberFee.create({
       club: clubId,
       year: activeYear._id,
-      user: userId,
-      amount, // Input is Rupees (e.g. 50), Setter saves Paisa (5000)
+      user: realUserId, 
+      amount, 
       collectedBy: adminId,
       notes
     });
@@ -43,12 +70,17 @@ exports.createPayment = async (req, res) => {
       details: { amount: amount, notes: notes }
     });
     
-    // 💰 FIX: Send formatted Rupees to Frontend
-    // We get the raw integer (5000) -> convert to client string ("50.00")
+    // 💰 FORMAT RESPONSE
     const feeObj = fee.toObject();
+    
+    // Manually attach the name so frontend displays it immediately
+    feeObj.memberName = memberName; 
+    
+    // Fix Amount (Paisa -> Rupees)
     feeObj.amount = toClient(fee.get('amount', null, { getters: false }));
 
     res.status(201).json({ success: true, message: "Payment recorded", data: feeObj });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
@@ -96,13 +128,21 @@ exports.getFeeSummary = async (req, res) => {
     if (!activeYear) return res.status(400).json({ message: "No active festival year." });
 
     // 2. Get All Members
+    // We need this list to show rows for people who haven't paid anything yet
     const memberships = await Membership.find({ club: clubId }).populate("user", "name email phone");
     
-    // 3. Aggregate Fees for this Year (Returns Integers)
+    // 3. Aggregate Fees for this Year
     const fees = await MemberFee.aggregate([
-      { $match: { club: clubId, year: activeYear._id } },
-      { $group: { 
-          _id: "$user", 
+      { 
+        $match: { 
+            // ⚠️ FIX: Cast String to ObjectId
+            club: new mongoose.Types.ObjectId(clubId), 
+            year: activeYear._id 
+        } 
+      },
+      { 
+        $group: { 
+          _id: "$user", // Group by User ID
           totalPaid: { $sum: "$amount" }, // Sum of Integer Paise
           lastPaidAt: { $max: "$createdAt" },
           count: { $sum: 1 }
@@ -112,27 +152,33 @@ exports.getFeeSummary = async (req, res) => {
 
     // 4. Map Fees to Members
     const feeMap = {};
-    fees.forEach(f => { feeMap[f._id.toString()] = f; });
+    fees.forEach(f => { 
+        // Ensure we handle null IDs gracefully
+        if(f._id) feeMap[f._id.toString()] = f; 
+    });
 
     const summary = memberships.map(m => {
+        // Safety check: ensure user object exists (in case of broken DB references)
+        if (!m.user) return null; 
+
         const userId = m.user._id.toString();
         const feeData = feeMap[userId];
         const rawTotal = feeData?.totalPaid || 0; // Integer value
 
         return {
-            memberId: userId,
+            memberId: userId, // Returning User ID (consistent with frontend expectation?)
+            // OR if frontend needs Membership ID: memberId: m._id,
             name: m.user.name,
             email: m.user.email,
-            // 💰 Fix: Convert Integer to "50.00" string for display
+            // 💰 Format Integer to String "50.00"
             totalPaid: toClient(rawTotal), 
-            // Keep raw for sorting
-            rawTotal: rawTotal,
+          
             lastPaidAt: feeData?.lastPaidAt || null,
             transactionCount: feeData?.count || 0
         };
-    });
+    }).filter(Boolean); // Remove nulls
 
-    // Sort: Unpaid first, then by Name
+    // Sort: Unpaid/Zero first, then by Name
     summary.sort((a, b) => {
         if (a.rawTotal === 0 && b.rawTotal > 0) return -1;
         if (a.rawTotal > 0 && b.rawTotal === 0) return 1;
@@ -184,6 +230,11 @@ exports.getMemberFees = async (req, res) => {
   try {
     const { userId } = req.params;
     const { clubId } = req.user;
+    
+    // ✅ FIX: Guard against "undefined" string or invalid IDs
+    if (!userId || userId === "undefined" || !mongoose.Types.ObjectId.isValid(userId)) {
+        return res.status(400).json({ message: "Invalid User ID provided" });
+    }
 
     const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
     if (!activeYear) return res.status(404).json({ message: "No active year" });

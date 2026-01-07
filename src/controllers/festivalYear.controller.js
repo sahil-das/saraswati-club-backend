@@ -1,23 +1,21 @@
+const mongoose = require("mongoose"); // 👈 FIX: Required for Transactions
 const FestivalYear = require("../models/FestivalYear");
 const calculateBalance = require("../utils/calculateBalance"); 
 const Subscription = require("../models/Subscription");
 const { logAction } = require("../utils/auditLogger");
-const { toClient } = require("../utils/mongooseMoney"); // 👈 IMPORT THIS
+const { toClient } = require("../utils/mongooseMoney"); 
 
 /**
  * 🛠 HELPER: Format Year Object (Int -> String)
- * Ensures frontend gets "200.00" (Rupees) instead of 20000 (Paisa)
  */
 const formatYear = (yearDoc) => {
   if (!yearDoc) return null;
   const obj = yearDoc.toObject ? yearDoc.toObject() : yearDoc;
   
-  // Safe extraction of raw integer values
   const rawAmount = yearDoc.get ? yearDoc.get('amountPerInstallment', null, { getters: false }) : obj.amountPerInstallment;
   const rawOpening = yearDoc.get ? yearDoc.get('openingBalance', null, { getters: false }) : obj.openingBalance;
   const rawClosing = yearDoc.get ? yearDoc.get('closingBalance', null, { getters: false }) : obj.closingBalance;
 
-  // Overwrite with formatted strings
   obj.amountPerInstallment = toClient(rawAmount || 0);
   obj.openingBalance = toClient(rawOpening || 0);
   obj.closingBalance = toClient(rawClosing || 0);
@@ -26,82 +24,82 @@ const formatYear = (yearDoc) => {
 };
 
 /**
- * @desc Start a New Festival Year
+ * @desc Start a New Festival Year (TRANSACTIONAL)
  * @route POST /api/v1/festival-years
  */
 exports.createYear = async (req, res) => {
+  let session;
   try {
+    session = await mongoose.startSession();
+    session.startTransaction();
+
     const { 
       name, startDate, endDate, openingBalance, 
       subscriptionFrequency, totalInstallments, amountPerInstallment 
     } = req.body;
     
     const { clubId, id: userId } = req.user;
-
-    // Validate Frequency
+      // 🚨 ADD THIS CHECK
+    if (!clubId) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ message: "Missing 'x-club-id' header. Please select a club." });
+    }
+    // 1. Logic for Installments
     const VALID_FREQUENCIES = ["weekly", "monthly", "none"];
     const frequency = subscriptionFrequency || "weekly";
-    if (!VALID_FREQUENCIES.includes(frequency)) return res.status(400).json({ message: "Invalid frequency." });
+    if (!VALID_FREQUENCIES.includes(frequency)) {
+        throw new Error("Invalid frequency.");
+    }
 
-    // Determine Total Installments
     let finalInstallments = 0;
-    
     if (frequency === "monthly") {
         finalInstallments = 12;
     } else if (frequency === "weekly") {
         finalInstallments = Number(totalInstallments) || 52;
-    } else {
-        finalInstallments = 0;
     }
 
-    // 1. FIND LAST YEAR
-    const lastYear = await FestivalYear.findOne({ club: clubId }).sort({ createdAt: -1 });
+    // 2. STOP OLD YEAR (Atomic Lock)
+    // We find the active year and close it atomically so no new expenses can be added.
+    const lastYear = await FestivalYear.findOneAndUpdate(
+        { club: clubId, isActive: true },
+        { isActive: false, isClosed: true },
+        { new: true, session }
+    );
 
-    let derivedBalance = 0;
+    let derivedBalance = 0; // Paisa
 
     if (lastYear) {
-       if (lastYear.isClosed) {
-          derivedBalance = lastYear.get('closingBalance', null, { getters: false }); // Get Raw Integer
-       } else {
-          // calculateBalance likely returns a formatted string/number. 
-          // If it returns raw paisa, use it. If it returns rupees, convert.
-          // Assuming calculateBalance returns Rupees or string "500.00":
-          const calcBal = await calculateBalance(lastYear._id, lastYear.openingBalance);
-          derivedBalance = Number(calcBal) * 100; // Store as Paisa for next year
+       // Calculate balance from the now-closed year
+       const calcBal = await calculateBalance(lastYear._id, lastYear.openingBalance);
+       derivedBalance = Number(calcBal) * 100; // Store as Paisa
 
-          lastYear.isActive = false;
-          lastYear.isClosed = true;
-          // Save closing balance as Integer
-          lastYear.closingBalance = derivedBalance / 100; 
-          await lastYear.save();
-       }
+       lastYear.closingBalance = derivedBalance / 100; 
+       await lastYear.save({ session });
     }
 
-    // 2. Determine Opening Balance
-    let finalOpeningBalance = derivedBalance / 100; // Convert Paisa back to Rupees for Input
+    // 3. Determine Opening Balance for New Year
+    let finalOpeningBalance = derivedBalance / 100; // Rupees
     if (openingBalance !== undefined && openingBalance !== "" && openingBalance !== null) {
-        const inputVal = Number(openingBalance);
-        if (!isNaN(inputVal)) {
-            finalOpeningBalance = inputVal;
-        }
+        finalOpeningBalance = Number(openingBalance);
     }
 
-    // 3. Create New Year
-    const newYear = await FestivalYear.create({
+    // 4. Create New Year
+    const newYear = await FestivalYear.create([{
       club: clubId,
       name,
       startDate,
       endDate,
-      openingBalance: finalOpeningBalance, // Input Rupees -> Mongoose saves Paisa
+      openingBalance: finalOpeningBalance,
       subscriptionFrequency: frequency,
       totalInstallments: finalInstallments,
       amountPerInstallment: frequency === 'none' ? 0 : (Number(amountPerInstallment) || 0),
       isActive: true,
       isClosed: false,
       createdBy: userId
-    });
+    }], { session });
 
-    // ✅ LOG
+    // 5. Audit Log
     await logAction({
       req,
       action: "YEAR_STARTED",
@@ -111,15 +109,22 @@ exports.createYear = async (req, res) => {
         frequency: frequency,
         totalWeeks: finalInstallments
       }
-    });
+    }, session); // Pass session to logger if supported, or await independent
+
+    await session.commitTransaction();
+    session.endSession();
 
     res.status(201).json({
       success: true,
       message: `Cycle '${name}' started. Opening Balance: ${finalOpeningBalance}`,
-      year: formatYear(newYear) // 💰 FIX: Format Response
+      year: formatYear(newYear[0])
     });
 
   } catch (err) {
+    if (session) {
+        await session.abortTransaction();
+        session.endSession();
+    }
     console.error("Create Year Error:", err);
     res.status(500).json({ message: err.message });
   }
@@ -131,7 +136,6 @@ exports.createYear = async (req, res) => {
 exports.getAllYears = async (req, res) => {
     try {
       const years = await FestivalYear.find({ club: req.user.clubId }).sort({ startDate: -1 });
-      // 💰 FIX: Map and Format
       const formattedYears = years.map(y => formatYear(y));
       res.json({ success: true, data: formattedYears });
     } catch (err) { res.status(500).json({ message: "Server error" }); }
@@ -144,8 +148,6 @@ exports.getActiveYear = async (req, res) => {
     try {
       const activeYear = await FestivalYear.findOne({ club: req.user.clubId, isActive: true });
       if (!activeYear) return res.status(404).json({ message: "No active year found." });
-      
-      // 💰 FIX: Format Single Object
       res.json({ success: true, data: formatYear(activeYear) });
     } catch (err) { res.status(500).json({ message: "Server error" }); }
 };
@@ -162,22 +164,19 @@ exports.updateYear = async (req, res) => {
       subscriptionFrequency, totalInstallments, amountPerInstallment 
     } = req.body;
 
-    // 1. Fetch Year
     const yearDoc = await FestivalYear.findOne({ _id: id, club: clubId });
     if (!yearDoc) throw new Error("Year not found");
 
-    // 2. Detect Changes
     const currentFreq = yearDoc.subscriptionFrequency;
     const currentTotal = yearDoc.totalInstallments;
     
-    // Parse current amount safely (Handle String getter or Raw number)
+    // Parse current amount safely
     const currentAmountRaw = yearDoc.get('amountPerInstallment', null, { getters: false });
-    const currentAmount = currentAmountRaw / 100; // Convert Paisa -> Rupees
+    const currentAmount = currentAmountRaw / 100; 
 
     const newFreq = subscriptionFrequency || currentFreq;
     const newTotal = Number(totalInstallments) || currentTotal;
     
-    // Determine New Amount (Rupees)
     let newAmount = currentAmount;
     if (amountPerInstallment !== undefined && amountPerInstallment !== "") {
         newAmount = Number(amountPerInstallment);
@@ -187,7 +186,7 @@ exports.updateYear = async (req, res) => {
     const durationChanged = newTotal !== currentTotal;
     const amountChanged = Math.abs(newAmount - currentAmount) > 0.001;
 
-    // 3. Check for Existing Payments
+    // Validation
     const subsWithPayments = await Subscription.countDocuments({
         year: id,
         "installments.isPaid": true
@@ -195,14 +194,10 @@ exports.updateYear = async (req, res) => {
 
     const hasPayments = subsWithPayments > 0;
 
-    // --- VALIDATION ---
-
-    // A. FREQUENCY CHANGE
     if (freqChanged && hasPayments) {
         throw new Error(`Cannot change Frequency (to ${newFreq}) because payments have already been collected.`);
     }
 
-    // B. DURATION DECREASE
     if (durationChanged && newTotal < currentTotal) {
         const conflict = await Subscription.findOne({
             year: id,
@@ -220,41 +215,36 @@ exports.updateYear = async (req, res) => {
         }
     }
 
-    // 4. Update Year Doc
+    // Update Doc
     if (name) yearDoc.name = name;
     if (startDate) yearDoc.startDate = startDate;
     if (endDate) yearDoc.endDate = endDate;
     yearDoc.subscriptionFrequency = newFreq;
     yearDoc.totalInstallments = newTotal;
-    yearDoc.amountPerInstallment = newAmount; // Assign Rupees
+    yearDoc.amountPerInstallment = newAmount; 
 
-    // 5. Trigger Subscription Updates
+    // Update Subs
     if (freqChanged || durationChanged || amountChanged) {
         await adjustSubscriptions({
             yearId: id,
             newFreq,
             newTotal,
-            newAmount // Passing Number (Rupees)
+            newAmount
         });
     }
 
     await yearDoc.save();
 
-    // ✅ LOG
     await logAction({
       req,
       action: "YEAR_UPDATED",
       target: `Settings: ${yearDoc.name}`,
-      details: { 
-        amount: newAmount,
-        frequency: newFreq,
-        totalWeeks: newTotal
-      }
+      details: { amount: newAmount, frequency: newFreq, totalWeeks: newTotal }
     });
 
     res.json({ 
         success: true, 
-        data: formatYear(yearDoc), // 💰 FIX: Format Response
+        data: formatYear(yearDoc),
         message: "Settings updated successfully." 
     });
 
@@ -275,12 +265,11 @@ exports.closeYear = async (req, res) => {
     const year = await FestivalYear.findOne({ _id: id, club: clubId });
     if (!year) return res.status(404).json({ message: "Year not found" });
 
-    // Assuming calculateBalance returns Rupees or String "500.00"
     const finalBalance = await calculateBalance(year._id, year.openingBalance);
 
     year.isActive = false;
     year.isClosed = true;
-    year.closingBalance = Number(finalBalance); // Save as Rupees -> Mongoose converts to Paisa
+    year.closingBalance = Number(finalBalance); 
     
     await year.save();
 
@@ -294,7 +283,7 @@ exports.closeYear = async (req, res) => {
     res.json({ 
       success: true, 
       message: `Year '${year.name}' closed. Final Balance: ${finalBalance} saved.`,
-      data: formatYear(year) // 💰 FIX: Format Response
+      data: formatYear(year)
     });
 
   } catch (err) {
@@ -305,19 +294,14 @@ exports.closeYear = async (req, res) => {
 
 /**
  * 🛠 HELPER: Adjusts Subscriptions
- * @param {Number} newAmount - The amount in Rupees (e.g., 50)
  */
 async function adjustSubscriptions({ yearId, newFreq, newTotal, newAmount }) {
-    
     const subs = await Subscription.find({ year: yearId });
     if (subs.length === 0) return;
-
-    console.log(`🔄 Adjusting ${subs.length} subs: Freq=${newFreq}, Total=${newTotal}, Amt=${newAmount}`);
 
     for (const sub of subs) {
         let installments = sub.installments;
 
-        // CASE 1: Frequency Changed
         if (newFreq === 'none') {
             installments = [];
         } 
@@ -325,7 +309,6 @@ async function adjustSubscriptions({ yearId, newFreq, newTotal, newAmount }) {
             installments = generateInstallments(newTotal, newAmount);
         }
         else {
-            // CASE 2: Duration Change
             if (newTotal > installments.length) {
                 const startNum = installments.length + 1;
                 const addedCount = newTotal - installments.length;
@@ -336,13 +319,11 @@ async function adjustSubscriptions({ yearId, newFreq, newTotal, newAmount }) {
                 installments = installments.slice(0, newTotal);
             }
 
-            // C. UPDATE AMOUNTS
             installments.forEach(inst => {
                 inst.amountExpected = newAmount;
             });
         }
 
-        // Recalculate Totals
         const paidCount = installments.filter(i => i.isPaid).length;
         const dueCount = installments.length - paidCount;
 

@@ -3,18 +3,26 @@ const Joi = require("joi");
 // Auth Schemas
 exports.registerClubSchema = Joi.object({
   clubName: Joi.string().min(3).required(),
-  clubCode: Joi.string().alphanum().min(3).required(), // Alphanumeric only prevents special char injection
+  
+  // ✅ FIX 1: Allow hyphens/underscores in clubCode
+  clubCode: Joi.string()
+    .pattern(/^[a-zA-Z0-9-_]+$/)
+    .min(3)
+    .max(20)
+    .required()
+    .messages({
+      "string.pattern.base": "Club code can only contain letters, numbers, hyphens, and underscores."
+    }),
+
   adminName: Joi.string().min(3).required(),
+
+  // ✅ FIX 2: Add the missing 'username' field!
+  username: Joi.string().alphanum().min(3).max(30).required(),
+
   email: Joi.string().email().required(),
   password: Joi.string().min(6).required(),
-  phone: Joi.string().pattern(/^[0-9]{10}$/).optional() // Example: strict 10 digit check
+  phone: Joi.string().pattern(/^[0-9]{10}$/).optional()
 });
-
-exports.loginSchema = Joi.object({
-  email: Joi.string().required(), // We allow email or username, so generic string check
-  password: Joi.string().required()
-});
-
 // Expense Schemas
 exports.createExpenseSchema = Joi.object({
   title: Joi.string().min(3).required(),
@@ -32,5 +40,40 @@ exports.createYearSchema = Joi.object({
   openingBalance: Joi.number().min(0).optional(),
   subscriptionFrequency: Joi.string().valid("weekly", "monthly", "none").required(),
   totalInstallments: Joi.number().min(1).optional(),
+  amountPerInstallment: Joi.number().min(0).optional()
+});
+
+// Add this to existing schemas
+exports.createDonationSchema = Joi.object({
+  donorName: Joi.string().min(3).required(),
+  amount: Joi.number().positive().required(),
+  address: Joi.string().allow("").optional(),
+  phone: Joi.string().pattern(/^[0-9]+$/).optional(),
+  date: Joi.date().optional(),
+  receiptNo: Joi.string().optional()
+});
+
+exports.createMemberFeeSchema = Joi.object({
+  userId: Joi.string().required(), // ObjectId as string
+  amount: Joi.number().positive().required(),
+  notes: Joi.string().allow("").optional()
+});
+
+exports.createYearSchema = Joi.object({
+  name: Joi.string().required(),
+  startDate: Joi.date().required(),
+  endDate: Joi.date().greater(Joi.ref('startDate')).required(),
+  openingBalance: Joi.number().min(0).optional(),
+  subscriptionFrequency: Joi.string().valid("weekly", "monthly", "none").required(),
+  
+  // ✅ ADDED LIMITS: 
+  // .min(1) ensures at least one installment exists
+  // .max(52) or .max(104) prevents massive array generation in the database
+  totalInstallments: Joi.number().min(1).max(52).optional()
+    .messages({
+      'number.max': 'Weekly installments cannot exceed 52 (1 year).',
+      'number.min': 'There must be at least 1 installment.'
+    }),
+    
   amountPerInstallment: Joi.number().min(0).optional()
 });

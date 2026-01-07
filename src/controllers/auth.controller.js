@@ -49,10 +49,12 @@ exports.registerClub = async (req, res) => {
         throw new Error("All fields are required");
     }
 
-    // 2. Validate Club Code (Simple check to ensure it's clean)
+    // 2. Validate Club Code (Updated to allow hyphens and underscores)
     const cleanClubCode = clubCode.trim().toLowerCase();
-    if (/[^a-z0-9]/.test(cleanClubCode)) {
-        throw new Error("Club Code must only contain letters and numbers (no spaces).");
+
+    // Regex now allows a-z, 0-9, hyphen (-), and underscore (_)
+    if (/[^a-z0-9-_]/.test(cleanClubCode)) {
+        throw new Error("Club Code must only contain letters, numbers, hyphens, or underscores.");
     }
 
     const existingClub = await Club.findOne({ code: cleanClubCode });

@@ -2,11 +2,13 @@ const express = require("express");
 const router = express.Router();
 const controller = require("../controllers/donation.controller");
 const authMiddleware = require("../middleware/auth.middleware");
+const validate = require('../middleware/validate'); 
+const { createDonationSchema } = require('../utils/schemas');
 
-// Protect all routes
 router.use(authMiddleware);
 
-router.post("/", controller.addDonation);
+// ✅ Apply Validation
+router.post("/", validate(createDonationSchema), controller.addDonation);
 router.get("/", controller.getDonations);
 router.delete("/:id", controller.deleteDonation);
 

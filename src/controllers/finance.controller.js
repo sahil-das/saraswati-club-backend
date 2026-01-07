@@ -1,14 +1,11 @@
+const mongoose = require("mongoose"); // 👈 Required for ObjectId casting
 const FestivalYear = require("../models/FestivalYear");
 const Subscription = require("../models/Subscription");
 const MemberFee = require("../models/MemberFee");
 const Donation = require("../models/Donation");
 const Expense = require("../models/Expense");
-const { toClient } = require("../utils/mongooseMoney"); // 👈 IMPORT THIS
+const { toClient } = require("../utils/mongooseMoney");
 
-/**
- * @route GET /api/v1/finance/summary
- * @desc Get global financial status for the ACTIVE year (Dashboard Stats)
- */
 exports.getSummary = async (req, res) => {
   try {
     const { clubId } = req.user;
@@ -32,35 +29,40 @@ exports.getSummary = async (req, res) => {
 
     const yearId = activeYear._id;
 
-    // 2. AGGREGATE: Subscriptions (Returns Integer Paise)
+    // ⚠️ CRITICAL FIX: Convert String ID to ObjectId for Aggregation
+    const matchQuery = { 
+        club: new mongoose.Types.ObjectId(clubId), 
+        year: yearId // yearId is already an ObjectId from the doc above
+    };
+
+    // 2. AGGREGATE: Subscriptions
     const subscriptionStats = await Subscription.aggregate([
-      { $match: { club: clubId, year: yearId } },
+      { $match: matchQuery },
       { $unwind: "$installments" },
       { $match: { "installments.isPaid": true } },
       { $group: { _id: null, total: { $sum: "$installments.amountExpected" } } }
     ]);
     const totalSubscriptionsInt = subscriptionStats[0]?.total || 0;
 
-    // 3. AGGREGATE: Member Fees (Returns Integer Paise)
+    // 3. AGGREGATE: Member Fees
     const memberFeeStats = await MemberFee.aggregate([
-      { $match: { club: clubId, year: yearId } },
+      { $match: matchQuery },
       { $group: { _id: null, total: { $sum: "$amount" } } }
     ]);
     const totalMemberFeesInt = memberFeeStats[0]?.total || 0;
 
-    // 4. AGGREGATE: Donations (Returns Integer Paise)
+    // 4. AGGREGATE: Donations
     const donationStats = await Donation.aggregate([
-      { $match: { club: clubId, year: yearId } },
+      { $match: matchQuery },
       { $group: { _id: null, total: { $sum: "$amount" } } }
     ]);
     const totalDonationsInt = donationStats[0]?.total || 0;
 
-    // 5. AGGREGATE: Expenses (Returns Integer Paise)
+    // 5. AGGREGATE: Expenses
     const expenseStats = await Expense.aggregate([
       { 
         $match: { 
-          club: clubId, 
-          year: yearId,
+          ...matchQuery, // Spread the club/year match
           status: "approved" 
         } 
       }, 
@@ -68,8 +70,8 @@ exports.getSummary = async (req, res) => {
     ]);
     const totalExpensesInt = expenseStats[0]?.total || 0;
 
-    // 6. Final Calculation (ALL INTEGERS)
-    // ⚠️ CRITICAL FIX: Access raw MongoDB value, ignoring the "50.00" string getter
+    // 6. Calculate Totals (All Math in Integers/Paisa)
+    // Use { getters: false } to get raw integer (e.g., 50000) instead of "500.00"
     const openingBalanceInt = activeYear.get('openingBalance', null, { getters: false }) || 0;
     
     const currentIncomeInt = totalSubscriptionsInt + totalMemberFeesInt + totalDonationsInt;
@@ -79,7 +81,7 @@ exports.getSummary = async (req, res) => {
       success: true,
       data: {
         yearName: activeYear.name,
-        // 7. Convert to String ONLY here
+        // 7. Convert to Client Format (Rupees) at the very end
         openingBalance: toClient(openingBalanceInt),
         totalIncome: toClient(currentIncomeInt),
         totalExpense: toClient(totalExpensesInt),

@@ -17,8 +17,9 @@ exports.getAllMembers = async (req, res) => {
     const { clubId } = req.user;
 
     // Fetch memberships and join with User details
+    // ✅ FIX 1: Add "personalEmail" to the list of fields to fetch
     const members = await Membership.find({ club: clubId })
-      .populate("user", "name email phone") 
+      .populate("user", "name email phone personalEmail") 
       .sort({ joinedAt: -1 });
 
     // Format data for frontend
@@ -27,6 +28,10 @@ exports.getAllMembers = async (req, res) => {
       userId: m.user ? m.user._id : null,
       name: m.user ? m.user.name : "Unknown",
       email: m.user ? m.user.email : "",
+      
+      // ✅ FIX 2: Use correct casing (personalEmail) matching your DB
+      personalEmail: m.user ? m.user.personalEmail : "", 
+      
       phone: m.user ? m.user.phone : "",
       role: m.role,
       status: m.status,

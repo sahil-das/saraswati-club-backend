@@ -16,7 +16,7 @@ const expenseRoutes = require("./routes/expenses.routes");
 const financeRoutes = require("./routes/finance.routes");
 const archiveRoutes = require("./routes/archive.routes");
 const noticeRoutes = require("./routes/notice.routes");
-
+const healthRoutes = require("./routes/health.routes");
 const app = express();
 
 /* ================= SECURITY ================= */
@@ -59,7 +59,7 @@ app.use("/api/v1/finance", financeRoutes);
 app.use("/api/v1/audit", require("./routes/audit.routes"));
 app.use("/api/v1/archives", archiveRoutes);
 app.use("/api/v1/notices", noticeRoutes);
-
+app.use("/health", healthRoutes);
 /* ================= ERROR HANDLING ================= */
 // Global Error Handler (Replaces repeated try-catch blocks)
 app.use((err, req, res, next) => {
