@@ -46,41 +46,51 @@ exports.createYear = async (req, res) => {
         return res.status(400).json({ message: "Missing 'x-club-id' header." });
     }
 
-    // 1. Logic for Installments
+    // 1. Validate Frequency
     const VALID_FREQUENCIES = ["weekly", "monthly", "none"];
     const frequency = subscriptionFrequency || "weekly";
     if (!VALID_FREQUENCIES.includes(frequency)) throw new Error("Invalid frequency.");
 
     let finalInstallments = frequency === "monthly" ? 12 : (Number(totalInstallments) || 52);
 
-    // 2. STOP OLD YEAR (Atomic Lock)
-    const lastYear = await FestivalYear.findOneAndUpdate(
+    // 2. FIND PREVIOUS YEAR (The Critical Fix 🔍)
+    let previousYear = null;
+    let finalOpeningBalance = 0;
+
+    // A. Priority 1: Check if there is currently an ACTIVE year to close
+    previousYear = await FestivalYear.findOneAndUpdate(
         { club: clubId, isActive: true },
         { isActive: false, isClosed: true },
         { new: true, session }
     );
 
-    let finalOpeningBalance = 0; // Rupees
+    // B. Priority 2: If no active year, find the LAST CREATED year
+    // ❌ OLD BUGGY CODE: .sort({ endDate: -1 }) 
+    // ✅ NEW FIXED CODE: .sort({ createdAt: -1 })
+    if (!previousYear) {
+        previousYear = await FestivalYear.findOne({ club: clubId })
+            .sort({ createdAt: -1 }) // Gets the one you added most recently
+            .session(session);
+    }
 
-    if (lastYear) {
-       // ✅ CASE A: CONTINUOUS YEAR (Carry Over)
-       // Calculate balance from the now-closed year
-       const calcBal = await calculateBalance(lastYear._id, lastYear.openingBalance);
-       
-       // calcBal is likely in Rupees (check your helper). 
-       // If calculateBalance returns Rupees, use it directly.
+    // 3. CALCULATE BALANCE
+    if (previousYear) {
+       // Calculate balance strictly for the identified previous year
+       const calcBal = await calculateBalance(previousYear._id, previousYear.openingBalance);
        const closingRupees = Number(calcBal) || 0;
 
-       // Save Closing Balance to Old Year
-       lastYear.closingBalance = closingRupees; 
-       await lastYear.save({ session });
+       // Save Closing Balance to that Previous Year
+       await FestivalYear.updateOne(
+           { _id: previousYear._id }, 
+           { closingBalance: closingRupees },
+           { session }
+       );
 
-       // Set New Year Opening Balance = Old Year Closing Balance
+       // Carry forward to New Year
        finalOpeningBalance = closingRupees;
 
     } else {
-       // ✅ CASE B: FIRST YEAR (Manual Input)
-       // Only allow manual opening balance if there was no previous year
+       // First year ever? Use manual input
        if (openingBalance !== undefined && openingBalance !== "") {
            finalOpeningBalance = Number(openingBalance);
        }
@@ -92,11 +102,11 @@ exports.createYear = async (req, res) => {
       name,
       startDate,
       endDate,
-      openingBalance: finalOpeningBalance, // ✅ Correctly set
+      openingBalance: finalOpeningBalance, 
       subscriptionFrequency: frequency,
       totalInstallments: finalInstallments,
       amountPerInstallment: frequency === 'none' ? 0 : (Number(amountPerInstallment) || 0),
-      isActive: true,
+      isActive: true, // New year starts as Active
       isClosed: false,
       createdBy: userId
     }], { session });
@@ -109,8 +119,7 @@ exports.createYear = async (req, res) => {
       details: { 
         openingBalance: finalOpeningBalance, 
         frequency: frequency,
-        totalWeeks: finalInstallments,
-        previousYearClosed: lastYear ? lastYear.name : "None"
+        previousYear: previousYear ? previousYear.name : "None"
       }
     });
 
@@ -137,7 +146,7 @@ exports.createYear = async (req, res) => {
  */
 exports.getAllYears = async (req, res) => {
     try {
-      const years = await FestivalYear.find({ club: req.user.clubId }).sort({ startDate: -1 });
+      const years = await FestivalYear.find({ club: req.user.clubId }).sort({ createdAt: -1 });
       const formattedYears = years.map(y => formatYear(y));
       res.json({ success: true, data: formattedYears });
     } catch (err) { res.status(500).json({ message: "Server error" }); }

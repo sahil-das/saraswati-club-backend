@@ -14,13 +14,13 @@ exports.getArchivedYears = async (req, res) => {
   try {
     const { clubId } = req.user;
     
-    // Fetch only closed years, sorted by most recent
+    // Fetch only closed years, sorted by MOST RECENTLY CREATED
     const closedYears = await FestivalYear.find({ 
       club: clubId, 
       isClosed: true 
     })
-    .select("name startDate endDate closingBalance") 
-    .sort({ endDate: -1 });
+    .select("name startDate endDate closingBalance createdAt") // Select createdAt for debugging/verification if needed
+    .sort({ createdAt: -1 }); // 👈 FIXED: Sort by creation time, not calendar date
 
     // Format closingBalance for the client
     const formattedYears = closedYears.map(y => {
