@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const mongooseMoney = require("../utils/mongooseMoney"); // 👈 IMPORT
+// ✂️ REMOVED: mongooseMoney is no longer needed here
 
 const clubSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
@@ -7,22 +7,8 @@ const clubSchema = new mongoose.Schema({
   address: { type: String, default: "" },
   contactPhone: { type: String, default: "" },
   
-  settings: {
-    contributionFrequency: {
-      type: String,
-      enum: ["weekly", "monthly", "none"], 
-      default: "weekly"
-    },
-    defaultInstallmentCount: { type: Number, default: 52 },
-    
-    // 💰 FIX: Use mongooseMoney
-    defaultAmountPerInstallment: { 
-      ...mongooseMoney, 
-      default: 0 
-    },
-    
-    currency: { type: String, default: "INR" }
-  },
+  // ✂️ REMOVED: Settings block deleted. 
+  // These rules (frequency, amount, etc.) now live exclusively in 'FestivalYear'.
   
   owner: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   isActive: { type: Boolean, default: true },

@@ -3,11 +3,12 @@ const Expense = require("../models/Expense");
 const MemberFee = require("../models/MemberFee");
 const Donation = require("../models/Donation");
 const Subscription = require("../models/Subscription");
-const { toClient } = require("../utils/mongooseMoney"); // 👈 IMPORT
+const { toClient } = require("../utils/mongooseMoney"); 
 
 /**
- * @desc Get List of Closed Years
- * @route GET /api/v1/archives
+ * @desc    Get List of Closed Years (Archive Index)
+ * @route   GET /api/v1/archives
+ * @access  Private
  */
 exports.getArchivedYears = async (req, res) => {
   try {
@@ -21,9 +22,10 @@ exports.getArchivedYears = async (req, res) => {
     .select("name startDate endDate closingBalance") 
     .sort({ endDate: -1 });
 
-    // 💰 FIX: Format closingBalance to "50.00" string
+    // Format closingBalance for the client
     const formattedYears = closedYears.map(y => {
         const obj = y.toObject();
+        // Access raw value using getters: false, then format
         obj.closingBalance = toClient(y.get('closingBalance', null, { getters: false }));
         return obj;
     });
@@ -31,13 +33,14 @@ exports.getArchivedYears = async (req, res) => {
     res.json({ success: true, data: formattedYears });
   } catch (err) {
     console.error("Archive List Error:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error fetching archives" });
   }
 };
 
 /**
- * @desc Get Full Report for a Specific Year
- * @route GET /api/v1/archives/:yearId
+ * @desc    Get Full Financial Report for a Specific Year
+ * @route   GET /api/v1/archives/:yearId
+ * @access  Private
  */
 exports.getArchiveDetails = async (req, res) => {
   try {
@@ -46,55 +49,80 @@ exports.getArchiveDetails = async (req, res) => {
 
     // 1. Verify the Year exists
     const yearDoc = await FestivalYear.findOne({ _id: yearId, club: clubId });
-    if (!yearDoc) return res.status(404).json({ message: "Year record not found" });
+    if (!yearDoc) {
+      return res.status(404).json({ message: "Year record not found" });
+    }
 
-    // 2. Parallel Fetching
+    // 2. Parallel Fetching of all related records
     const [expenses, fees, donations, subscriptions] = await Promise.all([
-      // A. Expenses
+      // A. Expenses (Approved only)
       Expense.find({ club: clubId, year: yearId, status: "approved" }).sort({ date: -1 }),
-      // B. Puja Fees
+      
+      // B. Member Fees (Puja Chanda/Levy)
       MemberFee.find({ club: clubId, year: yearId }).populate("user", "name").sort({ createdAt: -1 }),
-      // C. Donations
+      
+      // C. Public Donations
       Donation.find({ club: clubId, year: yearId }).sort({ date: -1 }),
-      // D. Subscriptions
-      Subscription.find({ club: clubId, year: yearId })
+      
+      // D. Member Subscriptions (Weekly/Monthly)
+      // ✅ FIX 1: Populate 'member' to get names for the report
+      Subscription.find({ club: clubId, year: yearId }).populate("member", "name")
     ]);
 
-    // 3. Calculate Totals (⚠️ USE RAW INTEGERS TO AVOID STRING CONCAT)
-    
+    // 3. Calculate Totals 
+    // (Using { getters: false } to access raw integers/cents from DB to ensure math accuracy)
+
+    // Sum Expenses
     const totalExpenseInt = expenses.reduce((sum, e) => {
         return sum + (e.get('amount', null, { getters: false }) || 0);
     }, 0);
 
+    // Sum Fees
     const totalFeesInt = fees.reduce((sum, f) => {
         return sum + (f.get('amount', null, { getters: false }) || 0);
     }, 0);
 
+    // Sum Donations
     const totalDonationsInt = donations.reduce((sum, d) => {
         return sum + (d.get('amount', null, { getters: false }) || 0);
     }, 0);
     
-    // Calculate Subscription Collection
+    // Sum Subscriptions (Iterate through paid installments)
     let totalSubscriptionCollectedInt = 0;
-    subscriptions.forEach(sub => {
+    
+    // ✅ FIX 2: Create a formatted list for the Frontend PDF/Table
+    const formattedSubscriptions = subscriptions.map(sub => {
+        let subTotal = 0;
         if (sub.installments) {
             sub.installments.forEach(inst => {
                 if (inst.isPaid) {
-                    // Access raw integer from subdocument
                     const amount = inst.get('amountExpected', null, { getters: false }) || 0;
-                    totalSubscriptionCollectedInt += amount;
+                    subTotal += amount;
                 }
             });
         }
-    });
+        totalSubscriptionCollectedInt += subTotal;
+
+        // Return object for the list
+        return {
+            _id: sub._id,
+            memberName: sub.member?.name || "Unknown Member", // Correctly access populated name
+            totalPaid: toClient(subTotal)
+        };
+    }).filter(item => parseFloat(item.totalPaid) > 0); // Only include members who actually paid
 
     const totalIncomeInt = totalSubscriptionCollectedInt + totalFeesInt + totalDonationsInt;
     
-    // Get raw opening/closing balance
+    // Get raw opening/closing balance from the Year Document
     const openingBalanceInt = yearDoc.get('openingBalance', null, { getters: false }) || 0;
     const closingBalanceInt = yearDoc.get('closingBalance', null, { getters: false }) || 0;
 
-    // 4. Construct Financial Summary (Convert to Strings for Client)
+    // 4. Mathematical Integrity Check
+    // Calculate what the balance *should* be based on the records found
+    const calculatedBalanceInt = openingBalanceInt + totalIncomeInt - totalExpenseInt;
+    const hasDiscrepancy = calculatedBalanceInt !== closingBalanceInt;
+
+    // 5. Construct Financial Summary (Convert Ints to Strings "0.00" for Client)
     const financialSummary = {
       openingBalance: toClient(openingBalanceInt),
       income: {
@@ -104,10 +132,14 @@ exports.getArchiveDetails = async (req, res) => {
         total: toClient(totalIncomeInt)
       },
       expense: toClient(totalExpenseInt),
-      netBalance: toClient(closingBalanceInt) // Truth from DB
+      netBalance: toClient(closingBalanceInt), // The official stored balance
+      
+      // Debug fields for the frontend to show warnings if needed
+      calculatedBalance: toClient(calculatedBalanceInt),
+      hasDiscrepancy: hasDiscrepancy
     };
 
-    // 💰 FIX: Format Records Lists (Map & Convert)
+    // 6. Format Individual Records (Map & Convert to Client format)
     const formattedExpenses = expenses.map(e => {
         const obj = e.toObject();
         obj.amount = toClient(e.get('amount', null, { getters: false }));
@@ -132,15 +164,17 @@ exports.getArchiveDetails = async (req, res) => {
         info: yearDoc, 
         summary: financialSummary,
         records: {
-          expenses: formattedExpenses,  // ✅ Now "50.00"
-          fees: formattedFees,          // ✅ Now "50.00"
-          donations: formattedDonations // ✅ Now "50.00"
+          expenses: formattedExpenses,
+          fees: formattedFees,
+          donations: formattedDonations,
+          // ✅ FIX 3: Send the formatted subscription list to the frontend
+          subscriptions: formattedSubscriptions 
         }
       }
     });
 
   } catch (err) {
     console.error("Archive Detail Error:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error fetching archive details" });
   }
 };

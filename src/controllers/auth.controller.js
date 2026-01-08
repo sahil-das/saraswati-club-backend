@@ -1,12 +1,12 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const crypto = require("crypto"); // Built-in Node module
+const crypto = require("crypto"); 
 
 const User = require("../models/User");
 const Club = require("../models/Club");
 const Membership = require("../models/Membership");
-const RefreshToken = require("../models/RefreshToken"); // 👈 NEW
+const RefreshToken = require("../models/RefreshToken");
 
 /**
  * 🛡️ HELPER: Generate Access & Refresh Tokens
@@ -20,12 +20,11 @@ const generateTokens = async (user, ipAddress) => {
   );
 
   // 2. Refresh Token (Long-lived: 7 days)
-  // We use a random string for the refresh token, not JWT
   const refreshTokenString = crypto.randomBytes(40).toString("hex");
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 Days
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); 
 
   // 3. Save to DB
-  const refreshTokenDoc = await RefreshToken.create({
+  await RefreshToken.create({
     user: user._id,
     token: refreshTokenString,
     expiresAt,
@@ -37,77 +36,79 @@ const generateTokens = async (user, ipAddress) => {
 
 /**
  * REGISTER NEW FESTIVAL COMMITTEE
+ * (Now using Transactions for Data Integrity)
  */
-
-
 exports.registerClub = async (req, res) => {
+  let session;
   try {
-    // 1. Accept 'username' from the request
+    // 1. Start Transaction
+    session = await mongoose.startSession();
+    session.startTransaction();
+
     const { clubName, clubCode, adminName, username, email, password, phone } = req.body;
 
     if (!clubName || !clubCode || !adminName || !username || !email || !password) {
         throw new Error("All fields are required");
     }
 
-    // 2. Validate Club Code (Updated to allow hyphens and underscores)
+    // 2. Validate Club Code
     const cleanClubCode = clubCode.trim().toLowerCase();
-
-    // Regex now allows a-z, 0-9, hyphen (-), and underscore (_)
     if (/[^a-z0-9-_]/.test(cleanClubCode)) {
         throw new Error("Club Code must only contain letters, numbers, hyphens, or underscores.");
     }
 
-    const existingClub = await Club.findOne({ code: cleanClubCode });
+    // Check existence (outside transaction to fail fast, or inside for lock? 
+    // Mongoose unique index will catch it, but explicit check is friendlier)
+    const existingClub = await Club.findOne({ code: cleanClubCode }).session(session);
     if (existingClub) throw new Error("Club Code is already taken. Please choose another.");
 
-    // 3. CONSTRUCT SYSTEM LOGIN ID
-    // Format: username@clubcode.com
+    // 3. Construct System Login ID
     const cleanUsername = username.trim().toLowerCase();
     if (/[^a-z0-9.]/.test(cleanUsername)) {
         throw new Error("Username must only contain letters, numbers, or dots.");
     }
     
     const systemLoginId = `${cleanUsername}@${cleanClubCode}.com`;
-
-    // Check if this specific ID exists (Just in case)
-    const idTaken = await User.findOne({ email: systemLoginId });
+    const idTaken = await User.findOne({ email: systemLoginId }).session(session);
     if (idTaken) throw new Error(`The Login ID '${systemLoginId}' is already taken.`);
 
     // 4. Hash Password
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // 5. Create User
-    const newUser = await User.create({
+    // 5. Create User (Pass Session)
+    const [newUser] = await User.create([{
       name: adminName,
-      email: systemLoginId,      // 🔐 Login ID: treasurer@starclub.com
-      personalEmail: email,      // 📧 Personal: rahul@gmail.com
+      email: systemLoginId,
+      personalEmail: email,
       password: hashedPassword,
       phone,
       isPlatformAdmin: false
-    });
+    }], { session });
 
-    // 6. Create Club
-    const newClub = await Club.create({
+    // 6. Create Club (Pass Session)
+    // ⚠️ Note: 'settings' removed as they are now handled in FestivalYear
+    const [newClub] = await Club.create([{
       name: clubName,
       code: cleanClubCode,
-      owner: newUser._id,
-      settings: {
-        contributionFrequency: "weekly",
-        defaultInstallmentCount: 52,
-        defaultAmountPerInstallment: 0
-      }
-    });
+      owner: newUser._id
+    }], { session });
 
-    // 7. Create Membership
-    await Membership.create({
+    // 7. Create Membership (Pass Session)
+    await Membership.create([{
       user: newUser._id,
       club: newClub._id,
       role: "admin",
       status: "active"
-    });
+    }], { session });
 
-    // 8. Generate Tokens
+    // 8. Commit Transaction
+    await session.commitTransaction();
+    session.endSession();
+
+    // 9. Generate Tokens (After successful commit)
+    // We do this outside the main transaction to avoid complex coupling, 
+    // ensuring the user exists first.
     const { accessToken, refreshToken } = await generateTokens(newUser, req.ip);
 
     res.status(201).json({
@@ -118,17 +119,22 @@ exports.registerClub = async (req, res) => {
       user: { 
           id: newUser._id, 
           name: newUser.name, 
-          email: newUser.email, // This is the ID they use to login
+          email: newUser.email, 
           personalEmail: newUser.personalEmail 
       },
       club: { id: newClub._id, name: newClub.name, code: newClub.code }
     });
 
   } catch (err) {
+    if (session) {
+        await session.abortTransaction();
+        session.endSession();
+    }
     console.error("Registration Error:", err);
     res.status(400).json({ message: err.message });
   }
 };
+
 /**
  * LOGIN USER
  */
@@ -146,10 +152,10 @@ exports.login = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    const memberships = await Membership.find({ user: user._id, status: "active" }).populate("club", "name code settings");
+    // ⚠️ Updated population: 'settings' no longer exists on Club
+    const memberships = await Membership.find({ user: user._id, status: "active" }).populate("club", "name code");
     if (memberships.length === 0) return res.status(403).json({ message: "You are not a member of any club." });
 
-    // 🛡️ GENERATE TOKENS
     const { accessToken, refreshToken } = await generateTokens(user, req.ip);
 
     res.json({
@@ -162,7 +168,7 @@ exports.login = async (req, res) => {
         clubName: m.club.name,
         clubCode: m.club.code,
         role: m.role,
-        frequency: m.club.settings?.contributionFrequency || "weekly"
+        // frequency: null // Settings moved to FestivalYear
       }))
     });
 
@@ -184,15 +190,13 @@ exports.refreshToken = async (req, res) => {
     const rToken = await RefreshToken.findOne({ token }).populate('user');
     
     if (!rToken || !rToken.isActive) {
-      // Security: If reusing a revoked token, we could revoke ALL tokens for this user (Reuse Detection)
       if (rToken && rToken.revoked) {
         console.warn(`🚨 Security: Reuse of revoked token detected for user ${rToken.user._id}`);
       }
       return res.status(403).json({ message: "Refresh token is invalid or expired" });
     }
 
-    // 2. Rotate Token (Revoke old, Issue new)
-    // This prevents "forever" tokens if one is stolen
+    // 2. Rotate Token
     rToken.revoked = Date.now();
     rToken.revokedByIp = req.ip;
     rToken.replacedByToken = "new_generated_below";
@@ -201,7 +205,6 @@ exports.refreshToken = async (req, res) => {
     // 3. Generate New Pair
     const { accessToken, refreshToken } = await generateTokens(rToken.user, req.ip);
     
-    // Update chain (optional, for tracking)
     rToken.replacedByToken = refreshToken;
     await rToken.save();
 
@@ -221,8 +224,6 @@ exports.revokeToken = async (req, res) => {
     const { token } = req.body;
     if (!token) return res.status(400).json({ message: "Token is required" });
 
-    // Users can only revoke their own tokens (unless admin, implemented later)
-    // Here we just accept the token string
     const rToken = await RefreshToken.findOne({ token });
     
     if (!rToken) return res.status(404).json({ message: "Token not found" });
@@ -244,7 +245,7 @@ exports.getMe = async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
         const memberships = await Membership.find({ user: user._id, status: "active" })
-          .populate("club", "name code settings");
+          .populate("club", "name code"); // ⚠️ settings removed
     
         res.json({
           success: true,
@@ -254,7 +255,7 @@ exports.getMe = async (req, res) => {
             clubName: m.club.name,
             clubCode: m.club.code,
             role: m.role,
-            frequency: m.club.settings?.contributionFrequency || "weekly"
+            // frequency: null // Moved to Year
           }))
         });
       } catch (err) {
@@ -267,7 +268,6 @@ exports.updateProfile = async (req, res) => {
     try {
         const { name, phone, email } = req.body;
         
-        // Find and update
         const user = await User.findByIdAndUpdate(
           req.user.id,
           { name, phone, email },
@@ -276,7 +276,7 @@ exports.updateProfile = async (req, res) => {
     
         res.json({
           success: true,
-          data: user, // 🛑 Frontend expects { data: user } structure
+          data: user,
           message: "Profile updated successfully"
         });
       } catch (err) {

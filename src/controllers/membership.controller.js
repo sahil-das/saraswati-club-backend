@@ -14,29 +14,36 @@ const { toClient } = require("../utils/mongooseMoney"); // 👈 IMPORT
  */
 exports.getAllMembers = async (req, res) => {
   try {
-    const { clubId } = req.user;
+    // 1. Get the Club ID AND the Role of the person asking
+    const { clubId, role: requesterRole } = req.user;
 
-    // Fetch memberships and join with User details
-    // ✅ FIX 1: Add "personalEmail" to the list of fields to fetch
+    // 2. Fetch memberships with User details
+    // We fetch all fields from DB, but we will filter them below
     const members = await Membership.find({ club: clubId })
       .populate("user", "name email phone personalEmail") 
       .sort({ joinedAt: -1 });
 
-    // Format data for frontend
-    const formattedMembers = members.map(m => ({
-      membershipId: m._id,
-      userId: m.user ? m.user._id : null,
-      name: m.user ? m.user.name : "Unknown",
-      email: m.user ? m.user.email : "",
-      
-      // ✅ FIX 2: Use correct casing (personalEmail) matching your DB
-      personalEmail: m.user ? m.user.personalEmail : "", 
-      
-      phone: m.user ? m.user.phone : "",
-      role: m.role,
-      status: m.status,
-      joinedAt: m.joinedAt
-    }));
+    // 3. Format data (Enforce Privacy)
+    const formattedMembers = members.map(m => {
+      // Base Data: Visible to EVERYONE
+      const memberData = {
+        membershipId: m._id,
+        userId: m.user ? m.user._id : null,
+        name: m.user ? m.user.name : "Unknown",
+        email: m.user ? m.user.email : "", // System Login ID (@club.com) is safe to show
+        role: m.role,
+        status: m.status,
+        joinedAt: m.joinedAt
+      };
+
+      // Sensitive Data: Visible ONLY to ADMINS
+      if (requesterRole === 'admin') {
+        memberData.personalEmail = m.user ? m.user.personalEmail : ""; // ✅ Correct casing
+        memberData.phone = m.user ? m.user.phone : "";
+      }
+
+      return memberData;
+    });
 
     res.json({ success: true, data: formattedMembers });
   } catch (err) {
@@ -44,7 +51,6 @@ exports.getAllMembers = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-
 /**
  * @route POST /api/v1/members
  * @desc Add a NEW Member (Supports System ID + Personal Email)

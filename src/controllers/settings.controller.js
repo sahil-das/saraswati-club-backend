@@ -1,50 +1,65 @@
 const FestivalYear = require("../models/FestivalYear");
-const Club = require("../models/Club");
+const yearController = require("./festivalYear.controller"); // 👈 Import the Year Logic
 
 /**
- * @route PUT /api/v1/years/:id
- * @desc Update Active Year Settings
+ * @desc Get Settings (Proxies to getActiveYear)
+ * @route GET /api/v1/settings
  */
-exports.updateYear = async (req, res) => {
+exports.get = async (req, res) => {
+  // The 'getActiveYear' controller already looks for { club: req.user.clubId, isActive: true }
+  // So we can directly delegate the request.
+  return yearController.getActiveYear(req, res);
+};
+
+/**
+ * @desc Update Settings (Finds Active Year -> Proxies to updateYear)
+ * @route PUT /api/v1/settings
+ */
+exports.update = async (req, res) => {
   try {
-    const { id } = req.params;
-    const updates = req.body;
+    const { clubId } = req.user;
 
-    // Prevent modifying 'club' or 'isActive' directly via this route if needed
-    delete updates.club;
-    delete updates.isActive; 
+    // 1. Find the ID of the currently active year
+    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
+    
+    if (!activeYear) {
+      return res.status(404).json({ message: "No active festival year found to update." });
+    }
 
-    const updatedYear = await FestivalYear.findOneAndUpdate(
-      { _id: id, club: req.user.clubId },
-      updates,
-      { new: true }
-    );
+    // 2. Inject the ID into req.params so the Year Controller can use it
+    req.params.id = activeYear._id.toString();
 
-    if (!updatedYear) return res.status(404).json({ message: "Year not found" });
+    // 3. Delegate to the robust logic in FestivalYear Controller
+    // This ensures all safety checks (like "Cannot change frequency if payments exist") are applied.
+    return yearController.updateYear(req, res);
 
-    res.json({ success: true, message: "Settings updated", data: updatedYear });
   } catch (err) {
-    res.status(500).json({ message: "Server Error" });
+    console.error("Settings Proxy Error:", err);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
 /**
- * @route POST /api/v1/years/:id/close
- * @desc Close the financial year
+ * @desc Close Year (Proxies to closeYear)
+ * @route POST /api/v1/settings/close-year
  */
 exports.closeYear = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { clubId } = req.user;
+
+    // 1. Find Active Year
+    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
     
-    const year = await FestivalYear.findOne({ _id: id, club: req.user.clubId });
-    if (!year) return res.status(404).json({ message: "Year not found" });
+    if (!activeYear) {
+      return res.status(404).json({ message: "No active festival year found to close." });
+    }
 
-    // Mark as inactive
-    year.isActive = false;
-    await year.save();
+    // 2. Inject ID and Delegate
+    req.params.id = activeYear._id.toString();
+    return yearController.closeYear(req, res);
 
-    res.json({ success: true, message: `Year '${year.name}' has been closed.` });
   } catch (err) {
-    res.status(500).json({ message: "Server Error" });
+    console.error("Settings Proxy Error:", err);
+    res.status(500).json({ message: "Server error" });
   }
 };

@@ -39,49 +39,51 @@ exports.createYear = async (req, res) => {
     } = req.body;
     
     const { clubId, id: userId } = req.user;
-      // 🚨 ADD THIS CHECK
+
     if (!clubId) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ message: "Missing 'x-club-id' header. Please select a club." });
+        return res.status(400).json({ message: "Missing 'x-club-id' header." });
     }
+
     // 1. Logic for Installments
     const VALID_FREQUENCIES = ["weekly", "monthly", "none"];
     const frequency = subscriptionFrequency || "weekly";
-    if (!VALID_FREQUENCIES.includes(frequency)) {
-        throw new Error("Invalid frequency.");
-    }
+    if (!VALID_FREQUENCIES.includes(frequency)) throw new Error("Invalid frequency.");
 
-    let finalInstallments = 0;
-    if (frequency === "monthly") {
-        finalInstallments = 12;
-    } else if (frequency === "weekly") {
-        finalInstallments = Number(totalInstallments) || 52;
-    }
+    let finalInstallments = frequency === "monthly" ? 12 : (Number(totalInstallments) || 52);
 
     // 2. STOP OLD YEAR (Atomic Lock)
-    // We find the active year and close it atomically so no new expenses can be added.
     const lastYear = await FestivalYear.findOneAndUpdate(
         { club: clubId, isActive: true },
         { isActive: false, isClosed: true },
         { new: true, session }
     );
 
-    let derivedBalance = 0; // Paisa
+    let finalOpeningBalance = 0; // Rupees
 
     if (lastYear) {
+       // ✅ CASE A: CONTINUOUS YEAR (Carry Over)
        // Calculate balance from the now-closed year
        const calcBal = await calculateBalance(lastYear._id, lastYear.openingBalance);
-       derivedBalance = Number(calcBal) * 100; // Store as Paisa
+       
+       // calcBal is likely in Rupees (check your helper). 
+       // If calculateBalance returns Rupees, use it directly.
+       const closingRupees = Number(calcBal) || 0;
 
-       lastYear.closingBalance = derivedBalance / 100; 
+       // Save Closing Balance to Old Year
+       lastYear.closingBalance = closingRupees; 
        await lastYear.save({ session });
-    }
 
-    // 3. Determine Opening Balance for New Year
-    let finalOpeningBalance = derivedBalance / 100; // Rupees
-    if (openingBalance !== undefined && openingBalance !== "" && openingBalance !== null) {
-        finalOpeningBalance = Number(openingBalance);
+       // Set New Year Opening Balance = Old Year Closing Balance
+       finalOpeningBalance = closingRupees;
+
+    } else {
+       // ✅ CASE B: FIRST YEAR (Manual Input)
+       // Only allow manual opening balance if there was no previous year
+       if (openingBalance !== undefined && openingBalance !== "") {
+           finalOpeningBalance = Number(openingBalance);
+       }
     }
 
     // 4. Create New Year
@@ -90,7 +92,7 @@ exports.createYear = async (req, res) => {
       name,
       startDate,
       endDate,
-      openingBalance: finalOpeningBalance,
+      openingBalance: finalOpeningBalance, // ✅ Correctly set
       subscriptionFrequency: frequency,
       totalInstallments: finalInstallments,
       amountPerInstallment: frequency === 'none' ? 0 : (Number(amountPerInstallment) || 0),
@@ -107,17 +109,18 @@ exports.createYear = async (req, res) => {
       details: { 
         openingBalance: finalOpeningBalance, 
         frequency: frequency,
-        totalWeeks: finalInstallments
+        totalWeeks: finalInstallments,
+        previousYearClosed: lastYear ? lastYear.name : "None"
       }
-    }, session); // Pass session to logger if supported, or await independent
+    });
 
     await session.commitTransaction();
     session.endSession();
 
     res.status(201).json({
       success: true,
-      message: `Cycle '${name}' started. Opening Balance: ${finalOpeningBalance}`,
-      year: formatYear(newYear[0])
+      message: `Cycle '${name}' started. Opening Balance: ₹${finalOpeningBalance}`,
+      year: newYear[0]
     });
 
   } catch (err) {
@@ -129,7 +132,6 @@ exports.createYear = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
-
 /**
  * @desc Get All Years
  */
