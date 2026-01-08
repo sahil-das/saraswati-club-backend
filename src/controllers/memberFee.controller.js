@@ -3,64 +3,73 @@ const FestivalYear = require("../models/FestivalYear");
 const Membership = require("../models/Membership");
 const User = require("../models/User"); 
 const { logAction } = require("../utils/auditLogger");
-const { toClient } = require("../utils/mongooseMoney"); // 👈 Ensure this is imported
+const { toClient } = require("../utils/mongooseMoney");
 const mongoose = require("mongoose");
+
 /**
  * @route POST /api/v1/member-fees
- * @desc Record a payment (Chanda)
+ * @desc Record a payment (Chanda) - Safe Transactional
  */
 exports.createPayment = async (req, res) => {
+  let session;
   try {
+    session = await mongoose.startSession();
+    session.startTransaction();
+
     const { userId: passedId, amount, notes } = req.body;
     const { clubId, id: adminId, role } = req.user;
 
-    // ✅ 1. Input Validation (Stop "undefined" errors here)
+    // ✅ 1. Input Validation
     if (!passedId || passedId === "undefined") {
-        return res.status(400).json({ message: "Member ID is required." });
+        throw new Error("Member ID is required.");
     }
-
     if (role !== 'admin') {
-      return res.status(403).json({ message: "Access denied. Admins only." });
+        throw new Error("Access denied. Admins only.");
     }
 
-    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
-    if (!activeYear) return res.status(404).json({ message: "No active festival year." });
+    // ✅ RACE CONDITION FIX: Fetch Year INSIDE Transaction
+    const activeYear = await FestivalYear.findOne({ 
+        club: clubId, 
+        isActive: true,
+        isClosed: false 
+    }).session(session);
+
+    if (!activeYear) throw new Error("No active festival year found.");
 
     // ✅ 2. Resolve Real User
+    if (!mongoose.Types.ObjectId.isValid(passedId)) {
+        throw new Error("Invalid Member ID format");
+    }
+
     let realUserId = passedId;
     let memberName = "Unknown Member";
 
-    // Check if it's a valid ObjectId to prevent CastErrors during lookup
-    if (!mongoose.Types.ObjectId.isValid(passedId)) {
-        return res.status(400).json({ message: "Invalid Member ID format" });
-    }
-
     // Attempt to find Membership first
-    const membership = await Membership.findById(passedId).populate("user");
+    const membership = await Membership.findById(passedId).populate("user").session(session);
 
     if (membership && membership.user) {
         realUserId = membership.user._id;
         memberName = membership.user.name;
     } else {
         // Fallback: Check if it's a direct User ID
-        const userObj = await User.findById(passedId);
+        const userObj = await User.findById(passedId).session(session);
         if (userObj) {
             memberName = userObj.name;
             realUserId = userObj._id;
         } else {
-            return res.status(404).json({ message: "Member not found" });
+            throw new Error("Member not found");
         }
     }
 
-    // ✅ 3. Create Fee (Now guaranteed to have a valid User ID)
-    const fee = await MemberFee.create({
+    // ✅ 3. Create Fee
+    const [fee] = await MemberFee.create([{
       club: clubId,
       year: activeYear._id,
       user: realUserId, 
       amount, 
       collectedBy: adminId,
       notes
-    });
+    }], { session });
   
     // ✅ LOG THE ACTION
     await logAction({
@@ -70,23 +79,27 @@ exports.createPayment = async (req, res) => {
       details: { amount: amount, notes: notes }
     });
     
+    await session.commitTransaction();
+    session.endSession();
+    
     // 💰 FORMAT RESPONSE
     const feeObj = fee.toObject();
-    
-    // Manually attach the name so frontend displays it immediately
     feeObj.memberName = memberName; 
-    
-    // Fix Amount (Paisa -> Rupees)
     feeObj.amount = toClient(fee.get('amount', null, { getters: false }));
 
     res.status(201).json({ success: true, message: "Payment recorded", data: feeObj });
 
   } catch (err) {
+    if (session) {
+        await session.abortTransaction();
+        session.endSession();
+    }
     console.error(err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: err.message || "Server error" });
   }
 };
 
+// ... (Rest of controller remains the same: getAllFees, getFeeSummary, etc.)
 /**
  * @route GET /api/v1/member-fees
  * @desc Get raw list of transactions (for history/logs)

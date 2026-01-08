@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const mongooseMoney = require("../utils/mongooseMoney"); // 👈 IMPORT
+const mongooseMoney = require("../utils/mongooseMoney");
 
 const subscriptionSchema = new mongoose.Schema({
   club: { type: mongoose.Schema.Types.ObjectId, ref: "Club", required: true },
@@ -8,22 +8,20 @@ const subscriptionSchema = new mongoose.Schema({
   
   installments: [{
     number: Number,
-    
-    // 💰 FIX: Use mongooseMoney
-    amountExpected: mongooseMoney, 
-    
+    // ✅ ADD Min Constraint
+    amountExpected: { ...mongooseMoney, min: 0 }, 
     isPaid: { type: Boolean, default: false },
     paidDate: Date,
     collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
   }],
 
-  // 💰 FIX: Use mongooseMoney
-  totalPaid: { ...mongooseMoney, default: 0 },
-  totalDue: { ...mongooseMoney, default: 0 }
+  // ✅ ADD Min Constraint
+  totalPaid: { ...mongooseMoney, default: 0, min: 0 },
+  totalDue: { ...mongooseMoney, default: 0, min: 0 }
 }, { timestamps: true,
-  toJSON: { getters: true },   // 👈 Add this
-  toObject: { getters: true }  // 👈 Add this
- });
+  toJSON: { getters: true },
+  toObject: { getters: true }
+});
 
 subscriptionSchema.index({ year: 1, member: 1 }, { unique: true });
 

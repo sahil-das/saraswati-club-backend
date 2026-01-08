@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const mongooseMoney = require("../utils/mongooseMoney"); // 👈 IMPORT
+const mongooseMoney = require("../utils/mongooseMoney");
 
 const donationSchema = new mongoose.Schema({
   club: { type: mongoose.Schema.Types.ObjectId, ref: "Club", required: true },
@@ -7,8 +7,8 @@ const donationSchema = new mongoose.Schema({
   
   donorName: { type: String, required: true, trim: true },
   
-  // 💰 FIX: Use mongooseMoney
-  amount: { ...mongooseMoney, required: true },
+  // ✅ ADD Min Constraint
+  amount: { ...mongooseMoney, required: true, min: 0 },
   
   address: { type: String, default: "" },
   phone: { type: String, default: "" },

@@ -1,41 +1,52 @@
+const mongoose = require("mongoose"); // 👈 Added Mongoose
 const Expense = require("../models/Expense");
 const FestivalYear = require("../models/FestivalYear");
 const { logAction } = require("../utils/auditLogger");
-const { toClient } = require("../utils/mongooseMoney"); // 👈 IMPORT THIS
+const { toClient } = require("../utils/mongooseMoney");
 
-// 1. ADD EXPENSE
+// 1. ADD EXPENSE (Safe Transactional)
 exports.addExpense = async (req, res) => {
+  let session;
   try {
+    session = await mongoose.startSession();
+    session.startTransaction();
+
     const { title, amount, category, description, date } = req.body;
     const { clubId, role } = req.user; 
 
     // ✅ VALIDATION
     if (!title || !title.trim()) {
-        return res.status(400).json({ message: "Expense title is required." });
+        throw new Error("Expense title is required.");
     }
     if (!amount || isNaN(amount) || Number(amount) <= 0) {
-        return res.status(400).json({ message: "Please enter a valid positive amount." });
+        throw new Error("Please enter a valid positive amount.");
     }
     if (!category) {
-        return res.status(400).json({ message: "Category is required." });
+        throw new Error("Category is required.");
     }
 
-    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
-    if (!activeYear) return res.status(400).json({ message: "No active festival year found." });
+    // ✅ RACE CONDITION FIX: Fetch Year INSIDE Transaction
+    const activeYear = await FestivalYear.findOne({ 
+        club: clubId, 
+        isActive: true,
+        isClosed: false // 🔒 Strict Check
+    }).session(session);
+
+    if (!activeYear) throw new Error("No active festival year found or year is closed.");
 
     const initialStatus = role === "admin" ? "approved" : "pending";
 
-    const newExpense = await Expense.create({
+    const [newExpense] = await Expense.create([{
       club: clubId,
       year: activeYear._id,
       title: title.trim(),
-      amount: Number(amount), // Mongoose Money Setter handles this (Saves 5000)
+      amount: Number(amount),
       category,
       description,
       date: date || new Date(),
       status: initialStatus,
       recordedBy: req.user.id
-    });
+    }], { session });
 
     // ✅ LOG
     const actionType = role === "admin" ? "CREATE_EXPENSE_APPROVED" : "CREATE_EXPENSE_REQUEST";
@@ -51,7 +62,10 @@ exports.addExpense = async (req, res) => {
       }
     });
 
-    // 💰 FIX: Convert to Plain Object & Format Amount
+    await session.commitTransaction();
+    session.endSession();
+
+    // 💰 Format Response
     const expenseObj = newExpense.toObject();
     expenseObj.amount = toClient(newExpense.get('amount', null, { getters: false }));
 
@@ -62,11 +76,17 @@ exports.addExpense = async (req, res) => {
     });
 
   } catch (err) {
+    if (session) {
+        await session.abortTransaction();
+        session.endSession();
+    }
     console.error(err);
-    res.status(500).json({ message: "Server Error" });
+    res.status(500).json({ message: err.message || "Server Error" });
   }
 };
 
+// ... (Rest of the controller remains the same: updateStatus, getExpenses, deleteExpense)
+// Just ensure you add 'const mongoose = require("mongoose")' at the top.
 // 2. APPROVE / REJECT
 exports.updateStatus = async (req, res) => {
   try {

@@ -5,8 +5,6 @@ const { logAction } = require("../utils/auditLogger");
 const { toClient } = require("../utils/mongooseMoney");
 const mongoose = require("mongoose");
 
-// ... (getMemberSubscription remains same, included below for completeness) ...
-
 exports.getMemberSubscription = async (req, res) => {
   try {
     const { memberId } = req.params;
@@ -106,7 +104,7 @@ exports.getMemberSubscription = async (req, res) => {
 };
 
 /**
- * @desc Pay Installment (NATIVE DRIVER FIX)
+ * @desc Pay Installment (FIXED: SAFE MONGOOSE TRANSACTION)
  * @route POST /api/v1/subscriptions/pay
  */
 exports.payInstallment = async (req, res) => {
@@ -118,8 +116,9 @@ exports.payInstallment = async (req, res) => {
     const { subscriptionId, installmentNumber, memberId } = req.body;
     const { clubId, id: adminUserId } = req.user;
 
-    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
+    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true }).session(session);
     if (!activeYear) throw new Error("No active festival year found.");
+    if (activeYear.isClosed) throw new Error("Current year is closed for transactions.");
 
     let subDoc = null;
     if (subscriptionId) {
@@ -136,17 +135,26 @@ exports.payInstallment = async (req, res) => {
         }).session(session);
 
         if (!subDoc) {
-            // Mongoose Creation is safe (Setters work correctly on Create)
-            const targetAmountRupees = activeYear.amountPerInstallment || 0; 
+            // Mongoose Creation (Setters work correctly on Create)
+            // 'amountPerInstallment' in activeYear is INTEGER (paise) if accessed via .get(..., getters:false)
+            // BUT here we access property direct which invokes getter -> "50.00"? 
+            // We need to be careful. Let's use raw to be safe.
+            const targetAmountInt = activeYear.get('amountPerInstallment', null, { getters: false }) || 0;
+            
+            // To create, we need to pass RUPEES if our schema setter expects it.
+            // Or we can rely on the fact that if we pass an object to create, setters run.
+            // Let's explicitly calculate expected Rupees.
+            const targetAmountRupees = targetAmountInt / 100;
+
             const installments = [];
             for (let i = 1; i <= activeYear.totalInstallments; i++) {
                 installments.push({ 
                     number: i, 
-                    amountExpected: targetAmountRupees, 
+                    amountExpected: targetAmountRupees, // Schema setter will multiply by 100 -> correct integer
                     isPaid: false 
                 });
             }
-            const totalDueRupees = activeYear.totalInstallments * targetAmountRupees;
+            const totalDueRupees = (activeYear.totalInstallments * targetAmountInt) / 100;
 
             const newSubs = await Subscription.create([{
                 club: clubId,
@@ -166,20 +174,22 @@ exports.payInstallment = async (req, res) => {
     if (instIndex === -1) throw new Error(`Installment #${installmentNumber} not found.`);
     const installment = subDoc.installments[instIndex];
     
-    // Get Raw Paisa Value
-    const amountVal = installment.get('amountExpected', null, { getters: false });
+    // Get Raw Paisa Value from DB
+    const amountValRaw = installment.get('amountExpected', null, { getters: false });
+    
+    // ⚠️ CRITICAL MATH FIX:
+    // Mongoose setters on $inc will multiply by 100.
+    // If we want to add 5000 paise, we must pass 50 (Rupees) to the update.
+    const amountInRupees = amountValRaw / 100;
+
     const isCurrentlyPaid = installment.isPaid;
     let auditAction = ""; 
-
-    // ⚠️ CRITICAL FIX: Use Native Driver Collection to BYPASS Mongoose Setters on $inc
-    // Mongoose Setters were multiplying amountVal by 100 again, causing inflation.
-    const collection = Subscription.collection;
 
     if (isCurrentlyPaid) {
         // === UNDO PAYMENT ===
         auditAction = "SUBSCRIPTION_UNDO";
         
-        await collection.updateOne(
+        await Subscription.findOneAndUpdate(
             { _id: subDoc._id, "installments.number": parseInt(installmentNumber) },
             { 
                 $set: { 
@@ -188,36 +198,35 @@ exports.payInstallment = async (req, res) => {
                     "installments.$.collectedBy": null
                 },
                 $inc: { 
-                    totalPaid: -amountVal, // Raw Integer (-3400)
-                    totalDue: amountVal    // Raw Integer (+3400)
+                    totalPaid: -amountInRupees, // Pass Rupees (-50) -> Setter makes it -5000
+                    totalDue: amountInRupees    // Pass Rupees (50) -> Setter makes it 5000
                 }
             },
-            { session } // Native driver supports session in options
+            { session, new: true, runValidators: true } 
         );
 
     } else {
         // === PROCESS PAYMENT ===
         auditAction = "SUBSCRIPTION_PAY";
 
-        await collection.updateOne(
+        await Subscription.findOneAndUpdate(
             { _id: subDoc._id, "installments.number": parseInt(installmentNumber) },
             { 
                 $set: { 
                     "installments.$.isPaid": true,
                     "installments.$.paidDate": new Date(),
-                    // Native driver needs explicit ObjectId cast
-                    "installments.$.collectedBy": new mongoose.Types.ObjectId(adminUserId) 
+                    "installments.$.collectedBy": adminUserId 
                 },
                 $inc: { 
-                    totalPaid: amountVal, // Raw Integer (+3400)
-                    totalDue: -amountVal  // Raw Integer (-3400)
+                    totalPaid: amountInRupees, // Pass Rupees (50) -> Setter makes it 5000
+                    totalDue: -amountInRupees  // Pass Rupees (-50) -> Setter makes it -5000
                 }
             },
-            { session }
+            { session, new: true, runValidators: true }
         );
     }
 
-    // 4. Audit Log & Return
+    // 4. Audit Log
     await subDoc.populate({
         path: "member",
         populate: {
@@ -226,7 +235,6 @@ exports.payInstallment = async (req, res) => {
         }
     });
 
-    // Access the nested name safely
     const memberName = subDoc.member?.user?.name || "Unknown Member";
     
     await logAction({
@@ -236,13 +244,13 @@ exports.payInstallment = async (req, res) => {
         details: {
             subscriptionId: subDoc._id,
             installment: installmentNumber,
-            memberName: memberName, // ✅ Correct Name (e.g., "Sahil Das")
-            amount: toClient(amountVal),
+            memberName: memberName,
+            amount: toClient(amountValRaw),
             status: auditAction === "SUBSCRIPTION_PAY" ? "Paid" : "Reverted"
         }
     });
 
-    // 5. Fetch FRESH data to return to client
+    // 5. Fetch FRESH data to return
     const updatedSub = await Subscription.findById(subDoc._id)
         .populate("year")
         .populate("member", "name")

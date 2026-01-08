@@ -1,41 +1,51 @@
+const mongoose = require("mongoose"); // 👈 Added Mongoose
 const Donation = require("../models/Donation");
 const FestivalYear = require("../models/FestivalYear");
 const { logAction } = require("../utils/auditLogger");
-const { toClient } = require("../utils/mongooseMoney"); // 👈 IMPORT THIS
+const { toClient } = require("../utils/mongooseMoney");
 
 /**
  * @route POST /api/v1/donations
- * @desc Add a new public donation
+ * @desc Add a new public donation (Safe Transactional)
  */
 exports.addDonation = async (req, res) => {
+  let session;
   try {
+    session = await mongoose.startSession();
+    session.startTransaction();
+
     const { donorName, amount, address, phone, date, receiptNo } = req.body;
     const { clubId, id: userId } = req.user;
 
     // 1. Validate Input
     if (!donorName || typeof donorName !== "string" || !donorName.trim()) {
-      return res.status(400).json({ message: "Donor name is required" });
+      throw new Error("Donor name is required");
     }
     if (!amount || isNaN(amount) || Number(amount) <= 0) {
-      return res.status(400).json({ message: "Valid positive amount is required" });
+      throw new Error("Valid positive amount is required");
     }
 
-    // 2. Find Active Year
-    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
-    if (!activeYear) return res.status(400).json({ message: "No active festival year found." });
+    // 2. Find Active Year INSIDE Transaction
+    const activeYear = await FestivalYear.findOne({ 
+        club: clubId, 
+        isActive: true,
+        isClosed: false 
+    }).session(session);
+
+    if (!activeYear) throw new Error("No active festival year found.");
 
     // 3. Create Donation
-    const donation = await Donation.create({
+    const [donation] = await Donation.create([{
       club: clubId,
       year: activeYear._id,
       donorName: donorName.trim(),
-      amount: Number(amount), // Input is Rupees (50) -> Saved as Paisa (5000)
+      amount: Number(amount),
       address: address?.trim(),
       phone: phone?.trim(),
       receiptNo: receiptNo?.trim(),
       date: date ? new Date(date) : new Date(),
       collectedBy: userId
-    });
+    }], { session });
 
     // 4. Log Action
     await logAction({
@@ -49,17 +59,25 @@ exports.addDonation = async (req, res) => {
       }
     });
 
-    // 💰 FIX: Convert to Plain Object & Format Amount to "50.00"
+    await session.commitTransaction();
+    session.endSession();
+
+    // 💰 Format Response
     const donationObj = donation.toObject();
     donationObj.amount = toClient(donation.get('amount', null, { getters: false }));
 
     res.status(201).json({ success: true, message: "Donation added", data: donationObj });
   } catch (err) {
+    if (session) {
+        await session.abortTransaction();
+        session.endSession();
+    }
     console.error("Add Donation Error:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: err.message || "Server error" });
   }
 };
 
+// ... (getDonations and deleteDonation remain unchanged)
 /**
  * @route GET /api/v1/donations
  * @desc Get donations for the ACTIVE year
