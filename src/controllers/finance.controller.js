@@ -30,14 +30,15 @@ exports.getSummary = async (req, res) => {
     const yearId = activeYear._id;
 
     // ⚠️ CRITICAL FIX: Convert String ID to ObjectId for Aggregation
-    const matchQuery = { 
+    const baseMatch = { 
         club: new mongoose.Types.ObjectId(clubId), 
         year: yearId // yearId is already an ObjectId from the doc above
     };
 
     // 2. AGGREGATE: Subscriptions
+    // Note: Subscriptions are "hard transactions" and don't typically use isDeleted yet.
     const subscriptionStats = await Subscription.aggregate([
-      { $match: matchQuery },
+      { $match: baseMatch }, 
       { $unwind: "$installments" },
       { $match: { "installments.isPaid": true } },
       { $group: { _id: null, total: { $sum: "$installments.amountExpected" } } }
@@ -46,14 +47,24 @@ exports.getSummary = async (req, res) => {
 
     // 3. AGGREGATE: Member Fees
     const memberFeeStats = await MemberFee.aggregate([
-      { $match: matchQuery },
+      { 
+        $match: { 
+          ...baseMatch, 
+          isDeleted: false // 👈 FILTER: Exclude deleted fees
+        } 
+      },
       { $group: { _id: null, total: { $sum: "$amount" } } }
     ]);
     const totalMemberFeesInt = memberFeeStats[0]?.total || 0;
 
     // 4. AGGREGATE: Donations
     const donationStats = await Donation.aggregate([
-      { $match: matchQuery },
+      { 
+        $match: { 
+          ...baseMatch, 
+          isDeleted: false // 👈 FILTER: Exclude deleted donations
+        } 
+      },
       { $group: { _id: null, total: { $sum: "$amount" } } }
     ]);
     const totalDonationsInt = donationStats[0]?.total || 0;
@@ -62,8 +73,9 @@ exports.getSummary = async (req, res) => {
     const expenseStats = await Expense.aggregate([
       { 
         $match: { 
-          ...matchQuery, // Spread the club/year match
-          status: "approved" 
+          ...baseMatch, 
+          status: "approved",
+          isDeleted: false // 👈 FILTER: Exclude deleted expenses
         } 
       }, 
       { $group: { _id: null, total: { $sum: "$amount" } } }

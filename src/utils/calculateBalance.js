@@ -12,26 +12,25 @@ const Expense = require("../models/Expense");
  */
 module.exports = async (yearId, openingBalance = 0) => {
   try {
-    // 1. Cast yearId to ObjectId (Aggregations require this)
     const id = new mongoose.Types.ObjectId(yearId);
 
-    // 2. Run Aggregations (These return INTEGER PAISE)
+    // ✅ UPDATE: Add { isDeleted: false } to all match stages
     const [subStats, feeStats, donationStats, expenseStats] = await Promise.all([
         Subscription.aggregate([
-            { $match: { year: id } },
-            { $group: { _id: null, total: { $sum: "$totalPaid" } } } // Integers
+            { $match: { year: id } }, // Subscriptions don't have isDeleted yet, usually hard transactions
+            { $group: { _id: null, total: { $sum: "$totalPaid" } } } 
         ]),
         MemberFee.aggregate([
-            { $match: { year: id } },
-            { $group: { _id: null, total: { $sum: "$amount" } } } // Integers
+            { $match: { year: id, isDeleted: false } }, // 👈 FILTER: Exclude deleted fees
+            { $group: { _id: null, total: { $sum: "$amount" } } } 
         ]),
         Donation.aggregate([
-            { $match: { year: id } },
-            { $group: { _id: null, total: { $sum: "$amount" } } } // Integers
+            { $match: { year: id, isDeleted: false } }, // 👈 FILTER: Exclude deleted donations
+            { $group: { _id: null, total: { $sum: "$amount" } } } 
         ]),
         Expense.aggregate([
-            { $match: { year: id, status: "approved" } },
-            { $group: { _id: null, total: { $sum: "$amount" } } } // Integers
+            { $match: { year: id, status: "approved", isDeleted: false } }, // 👈 FILTER: Exclude deleted expenses
+            { $group: { _id: null, total: { $sum: "$amount" } } } 
         ])
     ]);
 

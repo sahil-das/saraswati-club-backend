@@ -31,20 +31,25 @@ const createIndexes = async () => {
     console.log("✅ Subscription indexes set.");
 
     // 2. EXPENSES
-    // Sorting expenses by date for a specific year is the most common view
+    // ✅ UPDATE: Added 'isDeleted' to index for fast filtering
     await Expense.collection.createIndex(
-      { club: 1, year: 1, date: -1 },
+      { club: 1, year: 1, isDeleted: 1, date: -1 },
+      { background: true }
+    );
+    // For Status filtering (Approved vs Pending)
+    await Expense.collection.createIndex(
+      { club: 1, year: 1, status: 1, isDeleted: 1 },
       { background: true }
     );
     console.log("✅ Expense indexes set.");
 
     // 3. DONATIONS
-    // Search donors or sort by date
+    // ✅ UPDATE: Added 'isDeleted' to index
     await Donation.collection.createIndex(
-      { club: 1, year: 1, date: -1 },
+      { club: 1, year: 1, isDeleted: 1, date: -1 },
       { background: true }
     );
-    // Search text for donor name (Optional, but good for search bar)
+    // Search text for donor name
     await Donation.collection.createIndex(
         { donorName: "text" },
         { background: true }
@@ -52,8 +57,13 @@ const createIndexes = async () => {
     console.log("✅ Donation indexes set.");
 
     // 4. MEMBER FEES (Chanda)
+    // ✅ UPDATE: Added 'isDeleted' to index
     await MemberFee.collection.createIndex(
-      { club: 1, year: 1, user: 1 },
+      { club: 1, year: 1, user: 1, isDeleted: 1 },
+      { background: true }
+    );
+    await MemberFee.collection.createIndex(
+      { club: 1, year: 1, isDeleted: 1 },
       { background: true }
     );
     console.log("✅ MemberFee indexes set.");
@@ -67,7 +77,13 @@ const createIndexes = async () => {
     console.log("✅ Membership indexes set.");
 
     // 6. AUDIT LOGS
-    // TTL Index is already in schema, but let's ensure sorting is fast
+    // TTL Index (Expire logs after 2 years = 63072000 seconds)
+    // This prevents the table from growing forever
+    await AuditLog.collection.createIndex(
+        { createdAt: 1 },
+        { expireAfterSeconds: 63072000, background: true }
+    );
+    // Fast sort for admin dashboard
     await AuditLog.collection.createIndex(
         { club: 1, createdAt: -1 },
         { background: true }

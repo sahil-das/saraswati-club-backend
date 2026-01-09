@@ -19,13 +19,12 @@ exports.getArchivedYears = async (req, res) => {
       club: clubId, 
       isClosed: true 
     })
-    .select("name startDate endDate closingBalance createdAt") // Select createdAt for debugging/verification if needed
-    .sort({ createdAt: -1 }); // 👈 FIXED: Sort by creation time, not calendar date
+    .select("name startDate endDate closingBalance createdAt") 
+    .sort({ createdAt: -1 });
 
     // Format closingBalance for the client
     const formattedYears = closedYears.map(y => {
         const obj = y.toObject();
-        // Access raw value using getters: false, then format
         obj.closingBalance = toClient(y.get('closingBalance', null, { getters: false }));
         return obj;
     });
@@ -54,18 +53,32 @@ exports.getArchiveDetails = async (req, res) => {
     }
 
     // 2. Parallel Fetching of all related records
+    // ✅ CRITICAL UPDATE: Added { isDeleted: false } to financial queries
     const [expenses, fees, donations, subscriptions] = await Promise.all([
-      // A. Expenses (Approved only)
-      Expense.find({ club: clubId, year: yearId, status: "approved" }).sort({ date: -1 }),
+      // A. Expenses (Approved + Active)
+      Expense.find({ 
+          club: clubId, 
+          year: yearId, 
+          status: "approved",
+          isDeleted: false // 👈 FILTER
+      }).sort({ date: -1 }),
       
-      // B. Member Fees (Puja Chanda/Levy)
-      MemberFee.find({ club: clubId, year: yearId }).populate("user", "name").sort({ createdAt: -1 }),
+      // B. Member Fees (Active)
+      MemberFee.find({ 
+          club: clubId, 
+          year: yearId,
+          isDeleted: false // 👈 FILTER
+      }).populate("user", "name").sort({ createdAt: -1 }),
       
-      // C. Public Donations
-      Donation.find({ club: clubId, year: yearId }).sort({ date: -1 }),
+      // C. Public Donations (Active)
+      Donation.find({ 
+          club: clubId, 
+          year: yearId,
+          isDeleted: false // 👈 FILTER
+      }).sort({ date: -1 }),
       
       // D. Member Subscriptions (Weekly/Monthly)
-      // ✅ FIX 1: Populate 'member' to get names for the report
+      // (Subscriptions typically don't use soft delete yet, based on your models)
       Subscription.find({ club: clubId, year: yearId }).populate("member", "name")
     ]);
 
@@ -90,7 +103,7 @@ exports.getArchiveDetails = async (req, res) => {
     // Sum Subscriptions (Iterate through paid installments)
     let totalSubscriptionCollectedInt = 0;
     
-    // ✅ FIX 2: Create a formatted list for the Frontend PDF/Table
+    // Create a formatted list for the Frontend PDF/Table
     const formattedSubscriptions = subscriptions.map(sub => {
         let subTotal = 0;
         if (sub.installments) {
@@ -106,7 +119,7 @@ exports.getArchiveDetails = async (req, res) => {
         // Return object for the list
         return {
             _id: sub._id,
-            memberName: sub.member?.name || "Unknown Member", // Correctly access populated name
+            memberName: sub.member?.name || "Unknown Member", 
             totalPaid: toClient(subTotal)
         };
     }).filter(item => parseFloat(item.totalPaid) > 0); // Only include members who actually paid
@@ -118,11 +131,10 @@ exports.getArchiveDetails = async (req, res) => {
     const closingBalanceInt = yearDoc.get('closingBalance', null, { getters: false }) || 0;
 
     // 4. Mathematical Integrity Check
-    // Calculate what the balance *should* be based on the records found
     const calculatedBalanceInt = openingBalanceInt + totalIncomeInt - totalExpenseInt;
     const hasDiscrepancy = calculatedBalanceInt !== closingBalanceInt;
 
-    // 5. Construct Financial Summary (Convert Ints to Strings "0.00" for Client)
+    // 5. Construct Financial Summary
     const financialSummary = {
       openingBalance: toClient(openingBalanceInt),
       income: {
@@ -132,14 +144,14 @@ exports.getArchiveDetails = async (req, res) => {
         total: toClient(totalIncomeInt)
       },
       expense: toClient(totalExpenseInt),
-      netBalance: toClient(closingBalanceInt), // The official stored balance
+      netBalance: toClient(closingBalanceInt), 
       
-      // Debug fields for the frontend to show warnings if needed
+      // Debug fields
       calculatedBalance: toClient(calculatedBalanceInt),
       hasDiscrepancy: hasDiscrepancy
     };
 
-    // 6. Format Individual Records (Map & Convert to Client format)
+    // 6. Format Individual Records
     const formattedExpenses = expenses.map(e => {
         const obj = e.toObject();
         obj.amount = toClient(e.get('amount', null, { getters: false }));
@@ -167,7 +179,6 @@ exports.getArchiveDetails = async (req, res) => {
           expenses: formattedExpenses,
           fees: formattedFees,
           donations: formattedDonations,
-          // ✅ FIX 3: Send the formatted subscription list to the frontend
           subscriptions: formattedSubscriptions 
         }
       }

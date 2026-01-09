@@ -139,42 +139,46 @@ exports.getExpenses = async (req, res) => {
 
     const expenses = await Expense.find({ 
         club: clubId,
-        year: activeYear._id 
+        year: activeYear._id,
+        isDeleted: false // 👈 ONLY ACTIVE RECORDS
       })
       .populate("recordedBy", "name")
       .sort({ date: -1 });
     
-    // 💰 FIX: Map and Format Every Item
+    // ... formatting logic ...
     const formattedExpenses = expenses.map(e => {
         const obj = e.toObject();
         obj.amount = toClient(e.get('amount', null, { getters: false }));
         return obj;
     });
-      
+
     res.json({ success: true, data: formattedExpenses });
   } catch (err) {
     res.status(500).json({ message: "Server Error" });
   }
 };
-
 // 4. DELETE EXPENSE
 exports.deleteExpense = async (req, res) => {
   try {
     const { id } = req.params;
     const { clubId } = req.user;
 
-    // Find first to log
-    const expense = await Expense.findOneAndDelete({ _id: id, club: clubId });
+    // Use findOneAndUpdate to set flag instead of findOneAndDelete
+    const expense = await Expense.findOneAndUpdate(
+        { _id: id, club: clubId },
+        { isDeleted: true }, // 👈 MARK AS DELETED
+        { new: true }
+    );
 
     if (!expense) return res.status(404).json({ message: "Expense not found" });
 
-    // ✅ LOG
+    // Log the action (Auditors can still see the record in DB if needed)
     await logAction({
       req,
       action: "DELETE_EXPENSE",
       target: `Deleted: ${expense.title}`,
       details: { 
-        amount: expense.amount, 
+        amount: toClient(expense.get('amount', null, { getters: false })), 
         category: expense.category 
       }
     });

@@ -6,8 +6,6 @@ const donationSchema = new mongoose.Schema({
   year: { type: mongoose.Schema.Types.ObjectId, ref: "FestivalYear", required: true },
   
   donorName: { type: String, required: true, trim: true },
-  
-  // ✅ ADD Min Constraint
   amount: { ...mongooseMoney, required: true, min: 0 },
   
   address: { type: String, default: "" },
@@ -15,7 +13,12 @@ const donationSchema = new mongoose.Schema({
   
   collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   date: { type: Date, default: Date.now },
-  receiptNo: { type: String } 
+  receiptNo: { type: String },
+
+  // ✅ NEW: Soft Delete Flag
+  isDeleted: { type: Boolean, default: false }
 }, { timestamps: true });
+
+donationSchema.index({ club: 1, isDeleted: 1 });
 
 module.exports = mongoose.model("Donation", donationSchema);

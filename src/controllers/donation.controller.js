@@ -85,19 +85,21 @@ exports.addDonation = async (req, res) => {
 exports.getDonations = async (req, res) => {
   try {
     const { clubId } = req.user;
-    
     const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
     
     if (!activeYear) return res.json({ success: true, data: [] });
 
-    const donations = await Donation.find({ club: clubId, year: activeYear._id })
+    const donations = await Donation.find({ 
+        club: clubId, 
+        year: activeYear._id,
+        isDeleted: false // 👈 FILTER
+    })
       .populate("collectedBy", "name")
       .sort({ date: -1 });
 
-    // 💰 FIX: Map and Format Every Item
+    // ... formatting logic ...
     const formattedDonations = donations.map(d => {
         const obj = d.toObject();
-        // Get raw integer (5000) -> Convert to client string ("50.00")
         obj.amount = toClient(d.get('amount', null, { getters: false }));
         return obj;
     });
@@ -117,20 +119,20 @@ exports.deleteDonation = async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Find first to log it
-    const donation = await Donation.findOne({ _id: id, club: req.user.clubId });
+    const donation = await Donation.findOneAndUpdate(
+        { _id: id, club: req.user.clubId },
+        { isDeleted: true }, // 👈 SOFT DELETE
+        { new: true }
+    );
 
     if (!donation) return res.status(404).json({ message: "Donation not found" });
 
-    await Donation.findByIdAndDelete(id);
-
-    // ✅ LOG DELETION
     await logAction({
       req,
       action: "DONATION_DELETED",
       target: `Deleted Donation: ${donation.donorName}`,
       details: { 
-        amount: donation.amount, // Logging the string/getter value is fine here
+        amount: toClient(donation.get('amount', null, { getters: false })),
         receipt: donation.receiptNo
       }
     });

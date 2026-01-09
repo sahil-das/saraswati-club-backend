@@ -6,8 +6,6 @@ const expenseSchema = new mongoose.Schema({
   year: { type: mongoose.Schema.Types.ObjectId, ref: "FestivalYear", required: true },
   
   title: { type: String, required: true },
-  
-  // ✅ ADD Min Constraint
   amount: { ...mongooseMoney, required: true, min: 0 },
   
   category: { type: String, required: true },
@@ -20,8 +18,14 @@ const expenseSchema = new mongoose.Schema({
     default: "pending" 
   },
 
-  recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
+  recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+
+  // ✅ NEW: Soft Delete Flag
+  isDeleted: { type: Boolean, default: false } 
 }, { timestamps: true });
 
 expenseSchema.index({ club: 1, year: 1, date: -1 }); 
+// Index for filtering deleted items efficiently
+expenseSchema.index({ club: 1, isDeleted: 1 });
+
 module.exports = mongoose.model("Expense", expenseSchema);

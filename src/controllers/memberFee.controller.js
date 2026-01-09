@@ -99,7 +99,6 @@ exports.createPayment = async (req, res) => {
   }
 };
 
-// ... (Rest of controller remains the same: getAllFees, getFeeSummary, etc.)
 /**
  * @route GET /api/v1/member-fees
  * @desc Get raw list of transactions (for history/logs)
@@ -110,7 +109,11 @@ exports.getAllFees = async (req, res) => {
     const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
     if (!activeYear) return res.status(404).json({ message: "No active year." });
 
-    const fees = await MemberFee.find({ club: clubId, year: activeYear._id })
+    const fees = await MemberFee.find({ 
+        club: clubId, 
+        year: activeYear._id,
+        isDeleted: false // 👈 FILTER: Exclude deleted
+    })
       .populate("user", "name email")
       .populate("collectedBy", "name")
       .sort({ createdAt: -1 });
@@ -150,7 +153,8 @@ exports.getFeeSummary = async (req, res) => {
         $match: { 
             // ⚠️ FIX: Cast String to ObjectId
             club: new mongoose.Types.ObjectId(clubId), 
-            year: activeYear._id 
+            year: activeYear._id,
+            isDeleted: false // 👈 FILTER: Exclude deleted from sums
         } 
       },
       { 
@@ -211,22 +215,20 @@ exports.getFeeSummary = async (req, res) => {
  */
 exports.deletePayment = async (req, res) => {
   try {
-    // 1. Find the fee first (so we can log what we are deleting)
-    const fee = await MemberFee.findOne({ _id: req.params.id, club: req.user.clubId })
-      .populate("user", "name"); 
+    const fee = await MemberFee.findOneAndUpdate(
+        { _id: req.params.id, club: req.user.clubId },
+        { isDeleted: true }, // 👈 SOFT DELETE
+        { new: true }
+    ).populate("user", "name");
 
     if (!fee) return res.status(404).json({ message: "Record not found" });
 
-    // 2. Delete it
-    await MemberFee.findByIdAndDelete(fee._id);
-
-    // ✅ LOG THE DELETION
     await logAction({
       req,
       action: "PAYMENT_DELETED",
       target: `Deleted Chanda: ${fee.user?.name || "Unknown User"}`,
       details: { 
-        amount: fee.amount, // Log logic usually handles string/number fine
+        amount: toClient(fee.get('amount', null, { getters: false })),
         originalDate: fee.createdAt 
       }
     });
@@ -256,7 +258,8 @@ exports.getMemberFees = async (req, res) => {
     const fees = await MemberFee.find({ 
       club: clubId, 
       year: activeYear._id,
-      user: userId 
+      user: userId,
+      isDeleted: false // 👈 FILTER: Exclude deleted
     }).populate("collectedBy", "name");
 
     // 💰 Fix: Calculate Total from Raw Integers to avoid string concatenation
