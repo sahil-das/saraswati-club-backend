@@ -3,7 +3,7 @@ const Subscription = require("../models/Subscription");
 const MemberFee = require("../models/MemberFee");
 const Donation = require("../models/Donation");
 const Expense = require("../models/Expense");
-
+const logger = require("./logger");
 /**
  * Calculates the Net Balance for a specific Year.
  * @param {string} yearId - The FestivalYear ID
@@ -53,14 +53,10 @@ module.exports = async (yearId, openingBalance = 0) => {
     // So we return 50.
     const totalRupees = totalPaise / 100;
 
-    console.log(`💰 Balance Calc for Year ${id}:`);
-    console.log(`   Open: ${openingPaise}p | Inc: ${incomePaise}p | Exp: ${expensePaise}p`);
-    console.log(`   Net: ${totalPaise}p -> Returns: ₹${totalRupees}`);
-    
     return totalRupees;
 
   } catch (err) {
-    console.error("Balance Calculation Error:", err);
+    logger.error("Balance Calculation Error", { error: err.message, stack: err.stack });
     return 0;
   }
 };

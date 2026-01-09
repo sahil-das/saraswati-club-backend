@@ -1,7 +1,7 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const Membership = require("../models/Membership");
-
+const logger = require("../utils/logger");
 const protect = async (req, res, next) => {
   let token;
 
@@ -41,7 +41,12 @@ const protect = async (req, res, next) => {
 
       next();
     } catch (error) {
-      console.error("Auth Middleware Error:", error);
+      logger.error("Auth Middleware Error", { 
+        error: error.message,
+        // stack: error.stack, // Optional: Uncomment if you want full stack traces for auth errors
+        ip: req.ip,            // 👈 key for security tracking
+        path: req.originalUrl 
+      });
       res.status(401).json({ message: "Not authorized, token failed" });
     }
   } else {

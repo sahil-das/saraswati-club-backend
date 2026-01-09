@@ -71,7 +71,7 @@ app.use("/health", healthRoutes);
 /* ================= ERROR HANDLING ================= */
 // Global Error Handler
 app.use((err, req, res, next) => {
-  console.error("🔥 Global Error:", err.stack);
+  logger.error(`Global Error: ${err.message}`, { stack: err.stack, path: req.originalUrl, method: req.method });
   
   // 🛡️ CRASH PREVENTION: If headers are already sent, delegate to default Express handler
   if (res.headersSent) {

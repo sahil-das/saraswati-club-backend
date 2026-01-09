@@ -1,7 +1,7 @@
 const AuditLog = require("../models/AuditLog");
 const FestivalYear = require("../models/FestivalYear");
 const mongoose = require("mongoose");
-
+const logger = require("../utils/logger");
 exports.getLogs = async (req, res) => {
   try {
     let { 
@@ -115,7 +115,12 @@ exports.getLogs = async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Audit Log Error:", err);
+    logger.error("Audit Log Fetch Error", { 
+      error: err.message, 
+      stack: err.stack,
+      clubId: req.user.clubId,
+      query: req.query 
+    });
     res.status(500).json({ message: "Server error fetching logs" });
   }
 };

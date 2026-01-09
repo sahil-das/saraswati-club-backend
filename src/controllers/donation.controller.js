@@ -3,7 +3,7 @@ const Donation = require("../models/Donation");
 const FestivalYear = require("../models/FestivalYear");
 const { logAction } = require("../utils/auditLogger");
 const { toClient } = require("../utils/mongooseMoney");
-
+const logger = require("../utils/logger");
 /**
  * @route POST /api/v1/donations
  * @desc Add a new public donation (Safe Transactional)
@@ -72,7 +72,11 @@ exports.addDonation = async (req, res) => {
         await session.abortTransaction();
         session.endSession();
     }
-    console.error("Add Donation Error:", err);
+    logger.error("Add Donation Error", { 
+      error: err.message, 
+      stack: err.stack,
+      clubId: req.user.clubId 
+    });
     res.status(500).json({ message: err.message || "Server error" });
   }
 };
@@ -106,7 +110,11 @@ exports.getDonations = async (req, res) => {
 
     res.json({ success: true, data: formattedDonations });
   } catch (err) {
-    console.error("Get Donations Error:", err);
+    logger.error("Get Donations Error", { 
+      error: err.message, 
+      stack: err.stack,
+      clubId: req.user.clubId 
+    });
     res.status(500).json({ message: "Server error" });
   }
 };
@@ -139,7 +147,11 @@ exports.deleteDonation = async (req, res) => {
 
     res.json({ success: true, message: "Donation deleted successfully" });
   } catch (err) {
-    console.error("Delete Donation Error:", err);
+    logger.error("Delete Donations Error", { 
+      error: err.message, 
+      stack: err.stack,
+      clubId: req.user.clubId 
+    });
     res.status(500).json({ message: "Server error" });
   }
 };

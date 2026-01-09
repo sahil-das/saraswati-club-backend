@@ -4,7 +4,7 @@ const MemberFee = require("../models/MemberFee");
 const Donation = require("../models/Donation");
 const Subscription = require("../models/Subscription");
 const { toClient } = require("../utils/mongooseMoney"); 
-
+const logger = require("../utils/logger");
 /**
  * @desc    Get List of Closed Years (Archive Index)
  * @route   GET /api/v1/archives
@@ -31,7 +31,7 @@ exports.getArchivedYears = async (req, res) => {
 
     res.json({ success: true, data: formattedYears });
   } catch (err) {
-    console.error("Archive List Error:", err);
+    logger.error("Archive List Error:", err);
     res.status(500).json({ message: "Server error fetching archives" });
   }
 };
@@ -182,7 +182,12 @@ exports.getArchiveDetails = async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Archive Detail Error:", err);
+    // Captures the error in a structured format for production logs
+    logger.error("Archive Detail Error", { 
+      error: err.message, 
+      stack: err.stack,
+      yearId: req.params.yearId 
+    });
     res.status(500).json({ message: "Server error fetching archive details" });
   }
 };

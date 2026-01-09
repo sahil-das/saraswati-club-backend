@@ -8,8 +8,8 @@ const User = require("../models/User");
 const Club = require("../models/Club");
 const Membership = require("../models/Membership");
 const RefreshToken = require("../models/RefreshToken");
-
-/**
+const logger = require("../utils/logger");
+/**c
  * 🛡️ HELPER: Generate Access & Refresh Tokens
  */
 const generateTokens = async (user, ipAddress) => {
@@ -212,7 +212,12 @@ exports.refreshToken = async (req, res, next) => {
     
     if (!rToken || !rToken.isActive) {
       if (rToken && rToken.revoked) {
-        console.warn(`🚨 Security: Reuse of revoked token detected for user ${rToken.user._id}`);
+        logger.warn("Security: Reuse of revoked token detected", { 
+          userId: rToken.user._id,
+          ip: req.ip,
+          revokedAt: rToken.revoked,
+          action: "REFRESH_TOKEN_REUSE_ATTEMPT"
+        });
       }
       return res.status(403).json({ message: "Refresh token is invalid or expired" });
     }

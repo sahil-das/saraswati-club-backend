@@ -3,7 +3,7 @@ const Expense = require("../models/Expense");
 const FestivalYear = require("../models/FestivalYear");
 const { logAction } = require("../utils/auditLogger");
 const { toClient } = require("../utils/mongooseMoney");
-
+const logger = require("../utils/logger");
 // 1. ADD EXPENSE (Safe Transactional)
 exports.addExpense = async (req, res) => {
   let session;
@@ -186,7 +186,11 @@ exports.deleteExpense = async (req, res) => {
     res.json({ success: true, message: "Expense deleted" });
 
   } catch (err) {
-    console.error("Delete Expense Error:", err);
+    logger.error("Delete Expanse Error", { 
+      error: err.message, 
+      stack: err.stack,
+      clubId: req.user.clubId 
+    });
     res.status(500).json({ message: "Server error" });
   }
 };

@@ -1,6 +1,6 @@
 require('dotenv').config();
 const Joi = require('joi');
-
+const logger = require('../utils/logger');
 const envSchema = Joi.object({
   PORT: Joi.number().default(3000),
   MONGO_URI: Joi.string().required().description("MongoDB Connection URL"),
@@ -12,7 +12,9 @@ const envSchema = Joi.object({
 const { error, value } = envSchema.validate(process.env);
 
 if (error) {
-  console.error(`🚨CRITICAL: Config validation error: ${error.message}`);
+  logger.error(`🚨 CRITICAL: Config validation error: ${error.message}`, { 
+    errorDetails: error.details 
+  });
   process.exit(1); // Stop the app immediately
 }
 
