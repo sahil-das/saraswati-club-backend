@@ -14,7 +14,7 @@ const validate = require("../middleware/validate"); // 👈 Import
 const schemas = require("../utils/schemas"); // 👈 Import schemas
 
 // Apply middleware to routes
-router.post("/register", validate(schemas.registerClubSchema),registerClub);
+router.post("/register", validate(schemas.registerClubSchema), registerClub);
 router.post("/login", validate(schemas.loginSchema), login);
 router.post("/refresh-token", refreshToken); // 🆕
 

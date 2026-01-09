@@ -53,54 +53,54 @@ exports.getArchiveDetails = async (req, res) => {
     }
 
     // 2. Parallel Fetching of all related records
-    // ✅ CRITICAL UPDATE: Added { isDeleted: false } to financial queries
     const [expenses, fees, donations, subscriptions] = await Promise.all([
-      // A. Expenses (Approved + Active)
+      // A. Expenses
       Expense.find({ 
           club: clubId, 
           year: yearId, 
           status: "approved",
-          isDeleted: false // 👈 FILTER
+          isDeleted: false 
       }).sort({ date: -1 }),
       
-      // B. Member Fees (Active)
+      // B. Member Fees
       MemberFee.find({ 
           club: clubId, 
           year: yearId,
-          isDeleted: false // 👈 FILTER
+          isDeleted: false 
       }).populate("user", "name").sort({ createdAt: -1 }),
       
-      // C. Public Donations (Active)
+      // C. Public Donations
       Donation.find({ 
           club: clubId, 
           year: yearId,
-          isDeleted: false // 👈 FILTER
+          isDeleted: false 
       }).sort({ date: -1 }),
       
-      // D. Member Subscriptions (Weekly/Monthly)
-      // (Subscriptions typically don't use soft delete yet, based on your models)
-      Subscription.find({ club: clubId, year: yearId }).populate("member", "name")
+      // D. Member Subscriptions
+      // 🚨 FIX: Nested Populate (Subscription -> Membership -> User)
+      Subscription.find({ club: clubId, year: yearId })
+        .populate({
+            path: "member",          // 1. Go to Membership
+            populate: {
+                path: "user",        // 2. Go to User (inside Membership)
+                select: "name"       // 3. Select Name
+            }
+        })
     ]);
 
     // 3. Calculate Totals 
-    // (Using { getters: false } to access raw integers/cents from DB to ensure math accuracy)
-
-    // Sum Expenses
     const totalExpenseInt = expenses.reduce((sum, e) => {
         return sum + (e.get('amount', null, { getters: false }) || 0);
     }, 0);
 
-    // Sum Fees
     const totalFeesInt = fees.reduce((sum, f) => {
         return sum + (f.get('amount', null, { getters: false }) || 0);
     }, 0);
 
-    // Sum Donations
     const totalDonationsInt = donations.reduce((sum, d) => {
         return sum + (d.get('amount', null, { getters: false }) || 0);
     }, 0);
     
-    // Sum Subscriptions (Iterate through paid installments)
     let totalSubscriptionCollectedInt = 0;
     
     // Create a formatted list for the Frontend PDF/Table
@@ -116,17 +116,16 @@ exports.getArchiveDetails = async (req, res) => {
         }
         totalSubscriptionCollectedInt += subTotal;
 
-        // Return object for the list
         return {
             _id: sub._id,
-            memberName: sub.member?.name || "Unknown Member", 
+            // 🚨 FIX: Access name via nested path (member -> user -> name)
+            memberName: sub.member?.user?.name || "Unknown Member", 
             totalPaid: toClient(subTotal)
         };
-    }).filter(item => parseFloat(item.totalPaid) > 0); // Only include members who actually paid
+    }).filter(item => parseFloat(item.totalPaid) > 0);
 
     const totalIncomeInt = totalSubscriptionCollectedInt + totalFeesInt + totalDonationsInt;
     
-    // Get raw opening/closing balance from the Year Document
     const openingBalanceInt = yearDoc.get('openingBalance', null, { getters: false }) || 0;
     const closingBalanceInt = yearDoc.get('closingBalance', null, { getters: false }) || 0;
 
@@ -145,8 +144,6 @@ exports.getArchiveDetails = async (req, res) => {
       },
       expense: toClient(totalExpenseInt),
       netBalance: toClient(closingBalanceInt), 
-      
-      // Debug fields
       calculatedBalance: toClient(calculatedBalanceInt),
       hasDiscrepancy: hasDiscrepancy
     };

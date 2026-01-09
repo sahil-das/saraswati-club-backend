@@ -1,9 +1,9 @@
 const express = require("express");
 const cors = require("cors");
-const helmet = require("helmet"); // 🛡️ NEW
+const helmet = require("helmet");
 const connectDB = require("./config/db");
 const { PORT } = require("./config/env");
-const { globalLimiter, authLimiter } = require("./middleware/limiters"); // 🛡️ NEW
+const { globalLimiter, authLimiter } = require("./middleware/limiters");
 
 // Routes
 const authRoutes = require("./routes/auth.routes");
@@ -17,17 +17,14 @@ const financeRoutes = require("./routes/finance.routes");
 const archiveRoutes = require("./routes/archive.routes");
 const noticeRoutes = require("./routes/notice.routes");
 const healthRoutes = require("./routes/health.routes");
+const auditRoutes = require("./routes/audit.routes"); // 👈 Clean Import
+
 const app = express();
 
-/* ================= SECURITY ================= */
-// 1. Set Security Headers
-app.use(helmet());
+/* ================= SECURITY & CONFIG ================= */
 
-// 2. Rate Limiting (Global)
-app.use(globalLimiter);
-
-// 3. CORS (Allow env config or fallbacks)
-// Check if CORS_ORIGIN is a comma-separated string in .env, otherwise use defaults
+// 1. CORS (MUST BE FIRST) 🚨
+// This ensures headers are present even if rate limits are hit or errors occur.
 const allowedOrigins = process.env.CORS_ORIGIN 
   ? process.env.CORS_ORIGIN.split(",") 
   : ["http://localhost:5173", "http://localhost:3000"];
@@ -39,7 +36,17 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: "10kb" })); // Body limit to prevent DoS
+// 2. Set Security Headers
+// We enable Cross-Origin Resource Policy to allow frontend access to assets if needed
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
+
+// 3. Rate Limiting (Global)
+app.use(globalLimiter);
+
+// 4. Body Parser (Limit to 10kb to prevent DoS)
+app.use(express.json({ limit: "10kb" }));
 
 /* ================= DB ================= */
 connectDB();
@@ -56,18 +63,35 @@ app.use("/api/v1/member-fees", memberFeeRoutes);
 app.use("/api/v1/donations", donationRoutes);
 app.use("/api/v1/expenses", expenseRoutes);
 app.use("/api/v1/finance", financeRoutes);
-app.use("/api/v1/audit", require("./routes/audit.routes"));
+app.use("/api/v1/audit", auditRoutes); 
 app.use("/api/v1/archives", archiveRoutes);
 app.use("/api/v1/notices", noticeRoutes);
 app.use("/health", healthRoutes);
+
 /* ================= ERROR HANDLING ================= */
-// Global Error Handler (Replaces repeated try-catch blocks)
+// Global Error Handler
 app.use((err, req, res, next) => {
   console.error("🔥 Global Error:", err.stack);
-  res.status(500).json({ 
-    message: "Internal Server Error", 
-    error: process.env.NODE_ENV === "development" ? err.message : undefined 
-  });
+  
+  // 🛡️ CRASH PREVENTION: If headers are already sent, delegate to default Express handler
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  const statusCode = err.statusCode || 500;
+  const message = err.message || "Internal Server Error";
+  
+  const response = { message };
+  
+  if (err.field) response.field = err.field; // Useful for form validation errors
+  
+  // Only show detailed error stack in Development
+  if (process.env.NODE_ENV === "development") {
+      response.error = err.message;
+      // response.stack = err.stack; // Optional: include stack trace if needed
+  }
+  
+  res.status(statusCode).json(response);
 });
 
 app.get("/", (req, res) => {

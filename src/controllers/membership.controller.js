@@ -118,12 +118,15 @@ exports.addMember = async (req, res) => {
  */
 exports.removeMember = async (req, res) => {
   try {
+    // 1. Check Permissions
     if (req.user.role !== "admin") {
       return res.status(403).json({ message: "Access Denied. Only Admins can remove members." });
     }
+
     const { id: membershipId } = req.params;
     const { clubId } = req.user;
 
+    // 2. Find Member to delete
     const memberToDelete = await Membership.findOne({ _id: membershipId, club: clubId })
       .populate("user", "name email");
 
@@ -131,8 +134,18 @@ exports.removeMember = async (req, res) => {
       return res.status(404).json({ message: "Member not found" });
     }
 
+    // 🛑 3. SAFETY CHECK: Prevent Removing Last Admin
+    if (memberToDelete.role === "admin") {
+        const adminCount = await Membership.countDocuments({ club: clubId, role: "admin" });
+        if (adminCount <= 1) {
+            return res.status(400).json({ message: "Cannot remove the last admin. Promote another member first." });
+        }
+    }
+
+    // 4. Delete
     await Membership.findByIdAndDelete(membershipId);
 
+    // 5. Log Action
     await logAction({
       req,
       action: "MEMBER_REMOVED",
@@ -160,20 +173,28 @@ exports.updateRole = async (req, res) => {
     const { role } = req.body; 
     const { clubId } = req.user;
 
+    // 1. Check Permissions
     if (req.user.role !== "admin") {
       return res.status(403).json({ message: "Only Admins can change roles." });
     }
 
+    // 🛑 2. SAFETY CHECK: Prevent Demoting Last Admin
+    // If the new role is NOT admin (i.e. demotion to 'member')
     if (role !== "admin") {
-      const adminCount = await Membership.countDocuments({ club: clubId, role: "admin" });
-      if (adminCount <= 1) {
-        const targetMember = await Membership.findById(membershipId);
-        if (targetMember && targetMember.role === "admin") {
-           return res.status(400).json({ message: "Cannot demote the last admin." });
-        }
+      const targetMember = await Membership.findById(membershipId);
+      
+      // If we are trying to demote an existing admin...
+      if (targetMember && targetMember.role === "admin") {
+          const adminCount = await Membership.countDocuments({ club: clubId, role: "admin" });
+          
+          // ...and they are the only one left
+          if (adminCount <= 1) {
+             return res.status(400).json({ message: "Cannot demote the last admin. Promote someone else first." });
+          }
       }
     }
 
+    // 3. Update Role
     const updatedMember = await Membership.findOneAndUpdate(
       { _id: membershipId, club: clubId },
       { role: role },
@@ -184,6 +205,7 @@ exports.updateRole = async (req, res) => {
 
     const memberName = updatedMember.user ? updatedMember.user.name : "Unknown Member";
 
+    // 4. Log Action
     await logAction({
       req,
       action: "ROLE_UPDATED",
@@ -199,10 +221,6 @@ exports.updateRole = async (req, res) => {
   }
 };
 
-/**
- * @desc Get Stats for Current Logged In Member
- * @route GET /api/v1/members/my-stats
- */
 exports.getMyStats = async (req, res) => {
   try {
     const { clubId, id: userId } = req.user;

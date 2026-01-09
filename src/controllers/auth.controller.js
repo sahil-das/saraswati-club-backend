@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto"); 
+const { logAction } = require("../utils/auditLogger"); // 👈 Ensure this import exists
 
 const User = require("../models/User");
 const Club = require("../models/Club");
@@ -38,10 +39,9 @@ const generateTokens = async (user, ipAddress) => {
  * REGISTER NEW FESTIVAL COMMITTEE
  * (Now using Transactions for Data Integrity)
  */
-exports.registerClub = async (req, res) => {
+exports.registerClub = async (req, res, next) => {
   let session;
   try {
-    // 1. Start Transaction
     session = await mongoose.startSession();
     session.startTransaction();
 
@@ -54,23 +54,37 @@ exports.registerClub = async (req, res) => {
     // 2. Validate Club Code
     const cleanClubCode = clubCode.trim().toLowerCase();
     if (/[^a-z0-9-_]/.test(cleanClubCode)) {
-        throw new Error("Club Code must only contain letters, numbers, hyphens, or underscores.");
+        const error = new Error("Club Code must only contain letters, numbers, hyphens, or underscores.");
+        error.statusCode = 400;
+        error.field = "clubCode";
+        throw error;
     }
 
-    // Check existence (outside transaction to fail fast, or inside for lock? 
-    // Mongoose unique index will catch it, but explicit check is friendlier)
     const existingClub = await Club.findOne({ code: cleanClubCode }).session(session);
-    if (existingClub) throw new Error("Club Code is already taken. Please choose another.");
+    if (existingClub) {
+        const error = new Error("Club code already taken");
+        error.statusCode = 409;
+        error.field = "clubCode";
+        throw error;
+    }
 
     // 3. Construct System Login ID
     const cleanUsername = username.trim().toLowerCase();
     if (/[^a-z0-9.]/.test(cleanUsername)) {
-        throw new Error("Username must only contain letters, numbers, or dots.");
+        const error = new Error("Username must only contain letters, numbers, or dots.");
+        error.statusCode = 400;
+        error.field = "username";
+        throw error;
     }
     
     const systemLoginId = `${cleanUsername}@${cleanClubCode}.com`;
     const idTaken = await User.findOne({ email: systemLoginId }).session(session);
-    if (idTaken) throw new Error(`The Login ID '${systemLoginId}' is already taken.`);
+    if (idTaken) {
+        const error = new Error("Username already taken");
+        error.statusCode = 409;
+        error.field = "username";
+        throw error;
+    }
 
     // 4. Hash Password
     const salt = await bcrypt.genSalt(10);
@@ -87,7 +101,6 @@ exports.registerClub = async (req, res) => {
     }], { session });
 
     // 6. Create Club (Pass Session)
-    // ⚠️ Note: 'settings' removed as they are now handled in FestivalYear
     const [newClub] = await Club.create([{
       name: clubName,
       code: cleanClubCode,
@@ -102,14 +115,18 @@ exports.registerClub = async (req, res) => {
       status: "active"
     }], { session });
 
-    // 8. Commit Transaction
     await session.commitTransaction();
     session.endSession();
 
-    // 9. Generate Tokens (After successful commit)
-    // We do this outside the main transaction to avoid complex coupling, 
-    // ensuring the user exists first.
+    // 9. Generate Tokens & Log
     const { accessToken, refreshToken } = await generateTokens(newUser, req.ip);
+    
+    await logAction({ 
+        req, 
+        action: "CLUB_REGISTERED", 
+        target: `Club: ${clubName}`,
+        details: { admin: adminName } 
+    });
 
     res.status(201).json({
       success: true,
@@ -130,15 +147,14 @@ exports.registerClub = async (req, res) => {
         await session.abortTransaction();
         session.endSession();
     }
-    console.error("Registration Error:", err);
-    res.status(400).json({ message: err.message });
+    next(err); // Pass to global error handler
   }
 };
 
 /**
  * LOGIN USER
  */
-exports.login = async (req, res) => {
+exports.login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
@@ -149,14 +165,22 @@ exports.login = async (req, res) => {
     }).select("+password");
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
+      // 🛡️ Log failed attempt
+      await logAction({ 
+        req, 
+        action: "LOGIN_FAILED", 
+        target: email, 
+        details: { reason: "Invalid Credentials" } 
+      });
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    // ⚠️ Updated population: 'settings' no longer exists on Club
     const memberships = await Membership.find({ user: user._id, status: "active" }).populate("club", "name code");
     if (memberships.length === 0) return res.status(403).json({ message: "You are not a member of any club." });
 
     const { accessToken, refreshToken } = await generateTokens(user, req.ip);
+
+    await logAction({ req, action: "LOGIN_SUCCESS", target: user.name });
 
     res.json({
       success: true,
@@ -167,26 +191,23 @@ exports.login = async (req, res) => {
         clubId: m.club._id,
         clubName: m.club.name,
         clubCode: m.club.code,
-        role: m.role,
-        // frequency: null // Settings moved to FestivalYear
+        role: m.role
       }))
     });
 
   } catch (err) {
-    console.error("Login Error:", err);
-    res.status(500).json({ message: "Server error" });
+    next(err);
   }
 };
 
 /**
  * 🔄 REFRESH TOKEN (Get new Access Token)
  */
-exports.refreshToken = async (req, res) => {
+exports.refreshToken = async (req, res, next) => {
   try {
     const { token } = req.body;
     if (!token) return res.status(400).json({ message: "Token is required" });
 
-    // 1. Find token in DB
     const rToken = await RefreshToken.findOne({ token }).populate('user');
     
     if (!rToken || !rToken.isActive) {
@@ -196,13 +217,12 @@ exports.refreshToken = async (req, res) => {
       return res.status(403).json({ message: "Refresh token is invalid or expired" });
     }
 
-    // 2. Rotate Token
+    // Rotate Token
     rToken.revoked = Date.now();
     rToken.revokedByIp = req.ip;
-    rToken.replacedByToken = "new_generated_below";
+    rToken.replacedByToken = "rotated";
     await rToken.save();
 
-    // 3. Generate New Pair
     const { accessToken, refreshToken } = await generateTokens(rToken.user, req.ip);
     
     rToken.replacedByToken = refreshToken;
@@ -211,15 +231,14 @@ exports.refreshToken = async (req, res) => {
     res.json({ accessToken, refreshToken });
 
   } catch (err) {
-    console.error("Refresh Error:", err);
-    res.status(500).json({ message: "Server error" });
+    next(err);
   }
 };
 
 /**
  * 🚪 LOGOUT (Revoke Token)
  */
-exports.revokeToken = async (req, res) => {
+exports.revokeToken = async (req, res, next) => {
   try {
     const { token } = req.body;
     if (!token) return res.status(400).json({ message: "Token is required" });
@@ -227,25 +246,26 @@ exports.revokeToken = async (req, res) => {
     const rToken = await RefreshToken.findOne({ token });
     
     if (!rToken) return res.status(404).json({ message: "Token not found" });
-    if (!rToken.isActive) return res.status(400).json({ message: "Token already inactive" });
-
+    
+    // Revoke
     rToken.revoked = Date.now();
     rToken.revokedByIp = req.ip;
     await rToken.save();
 
-    res.json({ message: "Token revoked successfully" });
+    res.json({ success: true, message: "Logged out successfully" });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
+    next(err);
   }
 };
 
-// ... Include existing getMe, updateProfile, changePassword ...
-exports.getMe = async (req, res) => {
+/**
+ * GET CURRENT USER
+ */
+exports.getMe = async (req, res, next) => {
     try {
         const user = await User.findById(req.user.id);
         const memberships = await Membership.find({ user: user._id, status: "active" })
-          .populate("club", "name code"); // ⚠️ settings removed
+          .populate("club", "name code");
     
         res.json({
           success: true,
@@ -254,17 +274,18 @@ exports.getMe = async (req, res) => {
             clubId: m.club._id,
             clubName: m.club.name,
             clubCode: m.club.code,
-            role: m.role,
-            // frequency: null // Moved to Year
+            role: m.role
           }))
         });
       } catch (err) {
-        console.error("GetMe Error:", err);
-        res.status(500).json({ message: "Server error" });
+        next(err);
       }
 };
 
-exports.updateProfile = async (req, res) => {
+/**
+ * UPDATE PROFILE
+ */
+exports.updateProfile = async (req, res, next) => {
     try {
         const { name, phone, email } = req.body;
         
@@ -280,12 +301,14 @@ exports.updateProfile = async (req, res) => {
           message: "Profile updated successfully"
         });
       } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Server Error" });
+        next(err);
       }
 };
 
-exports.changePassword = async (req, res) => {
+/**
+ * CHANGE PASSWORD
+ */
+exports.changePassword = async (req, res, next) => {
     try {
         const { oldPassword, newPassword } = req.body;
     
@@ -307,10 +330,11 @@ exports.changePassword = async (req, res) => {
     
         await user.save();
     
+        await logAction({ req, action: "PASSWORD_CHANGED", target: user.name });
+
         res.json({ success: true, message: "Password updated successfully" });
     
       } catch (err) {
-        console.error("Change Password Error:", err);
-        res.status(500).json({ message: "Server Error" });
+        next(err);
       }
 };

@@ -1,25 +1,21 @@
-const AuditLog = require("../models/AuditLog");
+// src/models/AuditLog.js
+const mongoose = require("mongoose");
 
-/**
- * Records an activity in the database.
- * CRITICAL FIX: Removed try/catch to ensure transaction aborts if logging fails.
- * * @param {Object} req - Express Request Object
- * @param {String} action - Short code (e.g. "UPDATE_SETTINGS")
- * @param {String} target - Human readable target
- * @param {Object} details - Optional JSON data
- * @param {Object} session - (Optional) Mongoose Transaction Session
- */
-exports.logAction = async ({ req, action, target, details, session = null }) => {
-  // 1. Basic Context Check
-  if (!req.user || !req.user.clubId) return;
+const auditLogSchema = new mongoose.Schema({
+  club: { type: mongoose.Schema.Types.ObjectId, ref: "Club", required: true },
+  actor: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  action: { type: String, required: true },
+  target: { type: String },
+  details: { type: Object },
+  ip: { type: String },
+  createdAt: { type: Date, default: Date.now }
+});
 
-  // 2. Create Log (Passed session ensures atomicity)
-  await AuditLog.create([{
-    club: req.user.clubId,
-    actor: req.user.id,
-    action,
-    target,
-    details,
-    ip: req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress
-  }], { session });
-};
+// INDEXES
+// 1. Fast filtering by club (Dashboard)
+auditLogSchema.index({ club: 1, createdAt: -1 });
+
+// 2. TTL Index: Automatically delete logs older than 365 days
+auditLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 31536000 });
+
+module.exports = mongoose.model("AuditLog", auditLogSchema);
