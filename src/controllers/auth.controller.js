@@ -278,6 +278,7 @@ exports.getMe = async (req, res, next) => {
     const responseUser = {
       id: user._id,
       name: user.name,
+      phone: user.phone,
       email: user.email,
       personalEmail: user.personalEmail,
       isPlatformAdmin: user.isPlatformAdmin,
