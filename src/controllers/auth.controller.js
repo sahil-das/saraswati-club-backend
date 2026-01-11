@@ -264,27 +264,30 @@ exports.revokeToken = async (req, res, next) => {
 };
 
 /**
- * GET CURRENT USER
+ * GET CURRENT LOGGED IN USER PROFILE
  */
 exports.getMe = async (req, res, next) => {
-    try {
-        const user = await User.findById(req.user.id);
-        const memberships = await Membership.find({ user: user._id, status: "active" })
-          .populate("club", "name code");
-    
-        res.json({
-          success: true,
-          user,
-          clubs: memberships.map(m => ({
-            clubId: m.club._id,
-            clubName: m.club.name,
-            clubCode: m.club.code,
-            role: m.role
-          }))
-        });
-      } catch (err) {
-        next(err);
-      }
+  try {
+    // req.user is populated by the protect middleware
+    const user = req.user;
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const responseUser = {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      personalEmail: user.personalEmail,
+      isPlatformAdmin: user.isPlatformAdmin,
+      role: user.role || "member", // Default to member if no club context
+    };
+
+    res.status(200).json({ success: true, user: responseUser });
+  } catch (err) {
+    next(err);
+  }
 };
 
 /**
