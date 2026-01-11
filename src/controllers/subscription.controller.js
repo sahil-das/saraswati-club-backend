@@ -22,9 +22,12 @@ exports.getMemberSubscription = async (req, res) => {
                 member: {
                     memberName: memberShip.user.name,
                     email: memberShip.user.email,
+                    personalEmail: memberShip.user.personalEmail,
                     phone: memberShip.user.phone,
                     role: memberShip.role,
-                    userId: memberShip.user._id
+                    userId: memberShip.user._id,
+                    joinedAt: memberShip.joinedAt
+
                 },
                 subscription: null,
                 year: null,
@@ -85,14 +88,13 @@ exports.getMemberSubscription = async (req, res) => {
             personalEmail: memberShip.user.personalEmail, 
             phone: memberShip.user.phone, 
             role: memberShip.role,        
-            userId: memberShip.user._id   
+            userId: memberShip.user._id,
+            joinedAt: memberShip.joinedAt   
         },
         year: {
             name: activeYear.name,
-            frequency: activeYear.subscriptionFrequency
-        },
-        rules: {
-          amount: toClient(targetAmountInt)
+            frequency: activeYear.subscriptionFrequency,
+            amountPerInstallment: toClient(targetAmountInt),
         }
       }
     });
