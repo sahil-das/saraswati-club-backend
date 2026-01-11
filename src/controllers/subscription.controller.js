@@ -92,10 +92,8 @@ exports.getMemberSubscription = async (req, res) => {
         },
         year: {
             name: activeYear.name,
-            frequency: activeYear.subscriptionFrequency
-        },
-        rules: {
-          amount: toClient(targetAmountInt)
+            frequency: activeYear.subscriptionFrequency,
+            amountPerInstallment: toClient(targetAmountInt)
         }
       }
     });
