@@ -2,14 +2,15 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto"); 
-const { logAction } = require("../utils/auditLogger"); // 👈 Ensure this import exists
+const { logAction } = require("../utils/auditLogger"); 
 
 const User = require("../models/User");
 const Club = require("../models/Club");
 const Membership = require("../models/Membership");
 const RefreshToken = require("../models/RefreshToken");
 const logger = require("../utils/logger");
-/**c
+
+/**
  * 🛡️ HELPER: Generate Access & Refresh Tokens
  */
 const generateTokens = async (user, ipAddress) => {
@@ -37,7 +38,6 @@ const generateTokens = async (user, ipAddress) => {
 
 /**
  * REGISTER NEW FESTIVAL COMMITTEE
- * (Now using Transactions for Data Integrity)
  */
 exports.registerClub = async (req, res, next) => {
   let session;
@@ -147,7 +147,7 @@ exports.registerClub = async (req, res, next) => {
         await session.abortTransaction();
         session.endSession();
     }
-    next(err); // Pass to global error handler
+    next(err); 
   }
 };
 
@@ -165,7 +165,6 @@ exports.login = async (req, res, next) => {
     }).select("+password");
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
-      // 🛡️ Log failed attempt
       await logAction({ 
         req, 
         action: "LOGIN_FAILED", 
@@ -176,7 +175,11 @@ exports.login = async (req, res, next) => {
     }
 
     const memberships = await Membership.find({ user: user._id, status: "active" }).populate("club", "name code");
-    if (memberships.length === 0) return res.status(403).json({ message: "You are not a member of any club." });
+
+    // 🚀 FIX: IF USER HAS NO CLUBS, CHECK IF THEY ARE A PLATFORM ADMIN BEFORE BLOCKING
+    if (memberships.length === 0 && !user.isPlatformAdmin) {
+        return res.status(403).json({ message: "You are not a member of any club." });
+    }
 
     const { accessToken, refreshToken } = await generateTokens(user, req.ip);
 
@@ -186,7 +189,12 @@ exports.login = async (req, res, next) => {
       success: true,
       accessToken,
       refreshToken,
-      user: { id: user._id, name: user.name, email: user.email },
+      user: { 
+        id: user._id, 
+        name: user.name, 
+        email: user.email,
+        isPlatformAdmin: user.isPlatformAdmin // Send this flag to frontend
+      },
       clubs: memberships.map(m => ({
         clubId: m.club._id,
         clubName: m.club.name,
@@ -268,14 +276,12 @@ exports.revokeToken = async (req, res, next) => {
  */
 exports.getMe = async (req, res, next) => {
   try {
-    // req.user is populated by the protect middleware
-    const user = req.user;
+    const user = req.user; // Populated by middleware
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // ✅ FIX: Fetch memberships so the frontend can restore the active club
     const memberships = await Membership.find({ user: user._id, status: "active" })
       .populate("club", "name code");
 
@@ -285,14 +291,13 @@ exports.getMe = async (req, res, next) => {
       phone: user.phone,
       email: user.email,
       personalEmail: user.personalEmail,
-      isPlatformAdmin: user.isPlatformAdmin,
+      isPlatformAdmin: user.isPlatformAdmin, // Important for Frontend
       role: user.role || "member",
     };
 
     res.status(200).json({ 
       success: true, 
       user: responseUser,
-      // ✅ FIX: Include the clubs array in the response
       clubs: memberships.map(m => ({
         clubId: m.club._id,
         clubName: m.club.name,
@@ -310,16 +315,12 @@ exports.getMe = async (req, res, next) => {
  */
 exports.updateProfile = async (req, res, next) => {
     try {
-        // 1. Destructure ONLY the fields allowed to be changed
-        // We strictly ignore 'req.body.email' here so it can never be overwritten.
         const { name, phone, personalEmail } = req.body;
 
-        // 2. Validate Uniqueness (Optional but recommended)
-        // If the user is changing personalEmail, make sure no one else has it.
         if (personalEmail) {
             const emailExists = await User.findOne({ 
                 personalEmail: personalEmail, 
-                _id: { $ne: req.user.id } // Exclude current user
+                _id: { $ne: req.user.id } 
             });
             
             if (emailExists) {
@@ -327,15 +328,9 @@ exports.updateProfile = async (req, res, next) => {
             }
         }
 
-        // 3. Update User
         const user = await User.findByIdAndUpdate(
           req.user.id,
-          { 
-            name, 
-            phone, 
-            personalEmail // 🟢 Update this
-            // 🔴 'email' is intentionally missing here, so it remains untouched in DB
-          },
+          { name, phone, personalEmail },
           { new: true, runValidators: true }
         ).select("-password");
     
@@ -343,7 +338,6 @@ exports.updateProfile = async (req, res, next) => {
             return res.status(404).json({ success: false, message: "User not found" });
         }
 
-        // 4. Return updated user (Frontend should update its state with this data)
         res.json({
           success: true,
           data: user,
@@ -351,7 +345,6 @@ exports.updateProfile = async (req, res, next) => {
         });
 
       } catch (err) {
-        // Handle MongoDB Duplicate Key Error (E11000) just in case
         if (err.code === 11000) {
             return res.status(400).json({ message: "Email or Phone already exists." });
         }

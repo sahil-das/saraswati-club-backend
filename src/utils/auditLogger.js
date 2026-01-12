@@ -1,25 +1,28 @@
+// src/utils/auditLogger.js
 const AuditLog = require("../models/AuditLog");
 
-/**
- * Records an activity in the database.
- * CRITICAL FIX: Removed try/catch to ensure transaction aborts if logging fails.
- * * @param {Object} req - Express Request Object
- * @param {String} action - Short code (e.g. "UPDATE_SETTINGS")
- * @param {String} target - Human readable target
- * @param {Object} details - Optional JSON data
- * @param {Object} session - (Optional) Mongoose Transaction Session
- */
 exports.logAction = async ({ req, action, target, details, session = null }) => {
-  // 1. Basic Context Check
-  if (!req.user || !req.user.clubId) return;
+  // 1. Basic Security Check
+  if (!req.user) return;
 
-  // 2. Create Log (Passed session ensures atomicity)
-  await AuditLog.create([{
-    club: req.user.clubId,
-    actor: req.user.id,
+  // 🔽 CHANGE: Allow if User has Club OR is Platform Admin
+  const hasAccess = req.user.clubId || req.user.isPlatformAdmin;
+  if (!hasAccess) return;
+
+  // 2. Prepare Data
+  const logData = {
+    actor: req.user._id, // or req.user.id
     action,
     target,
     details,
     ip: req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress
-  }], { session });
+  };
+
+  // Only attach club if it exists (Platform actions won't have this)
+  if (req.user.clubId) {
+    logData.club = req.user.clubId;
+  }
+
+  // 3. Create Log
+  await AuditLog.create([logData], { session });
 };

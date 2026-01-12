@@ -1,19 +1,26 @@
 const mongoose = require("mongoose");
 
 const noticeSchema = new mongoose.Schema({
-  club: { type: mongoose.Schema.Types.ObjectId, ref: "Club", required: true },
+  // 1. 🔽 CHANGE: Removed 'required: true' to allow Global Notices (club = null)
+  club: { type: mongoose.Schema.Types.ObjectId, ref: "Club" },
+
   title: { type: String, required: true, trim: true },
   message: { type: String, required: true },
   
-  // Type determines the color (Info=Blue, Warning=Yellow, Urgent=Red)
+  // 2. 🚀 NEW: 'type' determines banner color
   type: { 
     type: String, 
-    enum: ["info", "event", "urgent"], 
+    enum: ["info", "success", "warning", "urgent", "maintenance"], 
     default: "info" 
   },
   
+  // 3. 🚀 NEW: Expiration for auto-cleanup
+  expiresAt: { type: Date }, 
+
   postedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  createdAt: { type: Date, default: Date.now }
-});
+}, { timestamps: true });
+
+// Auto-delete expired notices
+noticeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 module.exports = mongoose.model("Notice", noticeSchema);
