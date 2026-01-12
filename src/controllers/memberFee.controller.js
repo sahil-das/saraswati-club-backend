@@ -8,7 +8,7 @@ const mongoose = require("mongoose");
 
 /**
  * @route POST /api/v1/member-fees
- * @desc Record a payment (Chanda) - Safe Transactional
+ * @desc Record a payment (Chanda) - Uses Membership Standard
  */
 exports.createPayment = async (req, res) => {
   let session;
@@ -16,6 +16,7 @@ exports.createPayment = async (req, res) => {
     session = await mongoose.startSession();
     session.startTransaction();
 
+    // passedId can be a User ID (from frontend) or a Membership ID
     const { userId: passedId, amount, notes } = req.body;
     const { clubId, id: adminId, role } = req.user;
 
@@ -36,36 +37,29 @@ exports.createPayment = async (req, res) => {
 
     if (!activeYear) throw new Error("No active festival year found.");
 
-    // ✅ 2. Resolve Real User
-    if (!mongoose.Types.ObjectId.isValid(passedId)) {
-        throw new Error("Invalid Member ID format");
+    // ✅ 2. Resolve Membership (The Bridge)
+    // This smart query finds the Membership whether the frontend sent a User ID OR a Membership ID
+    let membership = await Membership.findOne({ 
+        $or: [ 
+            { _id: (mongoose.Types.ObjectId.isValid(passedId) ? passedId : null) }, 
+            { user: (mongoose.Types.ObjectId.isValid(passedId) ? passedId : null) } 
+        ],
+        club: clubId 
+    }).populate("user").session(session);
+
+    if (!membership || !membership.user) {
+        throw new Error("Member not found in this club.");
     }
 
-    let realUserId = passedId;
-    let memberName = "Unknown Member";
+    const realUserId = membership.user._id;
+    const memberName = membership.user.name;
 
-    // Attempt to find Membership first
-    const membership = await Membership.findById(passedId).populate("user").session(session);
-
-    if (membership && membership.user) {
-        realUserId = membership.user._id;
-        memberName = membership.user.name;
-    } else {
-        // Fallback: Check if it's a direct User ID
-        const userObj = await User.findById(passedId).session(session);
-        if (userObj) {
-            memberName = userObj.name;
-            realUserId = userObj._id;
-        } else {
-            throw new Error("Member not found");
-        }
-    }
-
-    // ✅ 3. Create Fee
+    // ✅ 3. Create Fee (Standardizing on 'member' field)
     const [fee] = await MemberFee.create([{
       club: clubId,
       year: activeYear._id,
-      user: realUserId, 
+      member: membership._id, // 🌟 NEW STANDARD: Link to Membership
+      user: realUserId,       // ⚠️ BACKUP: Link to User (for safety)
       amount, 
       collectedBy: adminId,
       notes
@@ -101,7 +95,7 @@ exports.createPayment = async (req, res) => {
 
 /**
  * @route GET /api/v1/member-fees
- * @desc Get raw list of transactions (for history/logs)
+ * @desc Get raw list of transactions (Populated via Membership)
  */
 exports.getAllFees = async (req, res) => {
   try {
@@ -112,9 +106,12 @@ exports.getAllFees = async (req, res) => {
     const fees = await MemberFee.find({ 
         club: clubId, 
         year: activeYear._id,
-        isDeleted: false // 👈 FILTER: Exclude deleted
+        isDeleted: false 
     })
-      .populate("user", "name email")
+      .populate({
+          path: "member", // ✅ Link to Membership
+          populate: { path: "user", select: "name email" } // ✅ Nested Link to User
+      })
       .populate("collectedBy", "name")
       .sort({ createdAt: -1 });
 
@@ -122,18 +119,31 @@ exports.getAllFees = async (req, res) => {
     const formattedFees = fees.map(f => {
         const obj = f.toObject();
         obj.amount = toClient(f.get('amount', null, { getters: false }));
+        
+        // Flatten structure for Frontend convenience
+        // If 'member' exists, pull user details up to top level
+        if(f.member && f.member.user) {
+            obj.user = f.member.user; 
+            obj.memberName = f.member.user.name;
+        } else if (f.user) {
+             // Fallback for old records without 'member' populated
+             // (This requires .populate('user') above if we wanted to support mixed records perfectly, 
+             // but strictly speaking we are moving to member)
+        }
+        
         return obj;
     });
 
     res.json({ success: true, data: formattedFees });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 };
 
 /**
  * @route GET /api/v1/member-fees/summary
- * @desc Get All Members with their Total Paid status (For Collection Matrix)
+ * @desc Get All Members with their Total Paid status (Aggregated by Membership)
  */
 exports.getFeeSummary = async (req, res) => {
   try {
@@ -144,56 +154,51 @@ exports.getFeeSummary = async (req, res) => {
     if (!activeYear) return res.status(400).json({ message: "No active festival year." });
 
     // 2. Get All Members
-    // We need this list to show rows for people who haven't paid anything yet
     const memberships = await Membership.find({ club: clubId }).populate("user", "name email phone");
     
-    // 3. Aggregate Fees for this Year
+    // 3. Aggregate Fees by MEMBER ID
     const fees = await MemberFee.aggregate([
       { 
         $match: { 
-            // ⚠️ FIX: Cast String to ObjectId
             club: new mongoose.Types.ObjectId(clubId), 
             year: activeYear._id,
-            isDeleted: false // 👈 FILTER: Exclude deleted from sums
+            isDeleted: false 
         } 
       },
       { 
         $group: { 
-          _id: "$user", // Group by User ID
-          totalPaid: { $sum: "$amount" }, // Sum of Integer Paise
+          _id: "$member", // 🌟 Group by Membership ID
+          totalPaid: { $sum: "$amount" },
           lastPaidAt: { $max: "$createdAt" },
           count: { $sum: 1 }
         } 
       }
     ]);
 
-    // 4. Map Fees to Members
+    // 4. Map Fees to Memberships
     const feeMap = {};
     fees.forEach(f => { 
-        // Ensure we handle null IDs gracefully
         if(f._id) feeMap[f._id.toString()] = f; 
     });
 
     const summary = memberships.map(m => {
-        // Safety check: ensure user object exists (in case of broken DB references)
         if (!m.user) return null; 
 
-        const userId = m.user._id.toString();
-        const feeData = feeMap[userId];
-        const rawTotal = feeData?.totalPaid || 0; // Integer value
+        // Match Membership ID directly
+        const feeData = feeMap[m._id.toString()];
+        const rawTotal = feeData?.totalPaid || 0;
 
         return {
-            memberId: userId, // Returning User ID (consistent with frontend expectation?)
-            // OR if frontend needs Membership ID: memberId: m._id,
+            memberId: m.user._id, // Return User ID for frontend routing compatibility
+            membershipId: m._id,  // Return this too for robust linking
             name: m.user.name,
             email: m.user.email,
             // 💰 Format Integer to String "50.00"
             totalPaid: toClient(rawTotal), 
-          
             lastPaidAt: feeData?.lastPaidAt || null,
             transactionCount: feeData?.count || 0
         };
-    }).filter(Boolean); // Remove nulls
+    }).filter(Boolean);
 
     // Sort: Unpaid/Zero first, then by Name
     summary.sort((a, b) => {
@@ -215,18 +220,26 @@ exports.getFeeSummary = async (req, res) => {
  */
 exports.deletePayment = async (req, res) => {
   try {
+    // 1. Soft Delete the Fee
     const fee = await MemberFee.findOneAndUpdate(
         { _id: req.params.id, club: req.user.clubId },
-        { isDeleted: true }, // 👈 SOFT DELETE
+        { isDeleted: true }, 
         { new: true }
-    ).populate("user", "name");
+    ).populate({ 
+        path: "member", 
+        populate: { path: "user", select: "name" } 
+    });
 
     if (!fee) return res.status(404).json({ message: "Record not found" });
+
+    // 2. Log Action
+    // Robust name resolution: Try member->user->name, fall back to "Unknown"
+    const targetName = fee.member?.user?.name || "Unknown Member";
 
     await logAction({
       req,
       action: "PAYMENT_DELETED",
-      target: `Deleted Chanda: ${fee.user?.name || "Unknown User"}`,
+      target: `Deleted Chanda: ${targetName}`,
       details: { 
         amount: toClient(fee.get('amount', null, { getters: false })),
         originalDate: fee.createdAt 
@@ -240,13 +253,15 @@ exports.deletePayment = async (req, res) => {
   }
 };
 
-// ✅ NEW: Get fees for a specific member (for MemberDetails page)
+/**
+ * @route GET /api/v1/member-fees/:userId
+ * @desc Get fees for a specific member (Resolves User ID to Membership ID first)
+ */
 exports.getMemberFees = async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params; // Frontend likely sends User ID from URL
     const { clubId } = req.user;
     
-    // ✅ FIX: Guard against "undefined" string or invalid IDs
     if (!userId || userId === "undefined" || !mongoose.Types.ObjectId.isValid(userId)) {
         return res.status(400).json({ message: "Invalid User ID provided" });
     }
@@ -254,22 +269,26 @@ exports.getMemberFees = async (req, res) => {
     const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
     if (!activeYear) return res.status(404).json({ message: "No active year" });
 
-    // Fetch records
+    // 1. Resolve Membership First
+    // We need the Membership ID because that's how fees are now linked
+    const membership = await Membership.findOne({ user: userId, club: clubId });
+    if (!membership) return res.status(404).json({ message: "Member not found" });
+
+    // 2. Fetch records using Membership ID
     const fees = await MemberFee.find({ 
       club: clubId, 
       year: activeYear._id,
-      user: userId,
-      isDeleted: false // 👈 FILTER: Exclude deleted
+      member: membership._id, // 🌟 Query by Membership
+      isDeleted: false 
     }).populate("collectedBy", "name");
 
-    // 💰 Fix: Calculate Total from Raw Integers to avoid string concatenation
+    // 💰 Calculate Total
     const totalInt = fees.reduce((sum, f) => {
-      // Access raw value to avoid "50.00" + "50.00" = "50.0050.00"
       const rawAmount = f.get('amount', null, { getters: false }) || 0;
       return sum + rawAmount;
     }, 0);
 
-    // 💰 Fix: Format records too
+    // 💰 Format records
     const formattedRecords = fees.map(f => {
         const obj = f.toObject();
         obj.amount = toClient(f.get('amount', null, { getters: false }));
@@ -279,7 +298,7 @@ exports.getMemberFees = async (req, res) => {
     res.json({ 
       success: true, 
       data: {
-        total: toClient(totalInt), // Format to "100.00"
+        total: toClient(totalInt),
         records: formattedRecords
       } 
     });
