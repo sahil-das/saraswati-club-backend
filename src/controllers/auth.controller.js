@@ -292,23 +292,55 @@ exports.getMe = async (req, res, next) => {
 
 /**
  * UPDATE PROFILE
+ * 🔒 Security: Explicitly allows 'personalEmail' but BLOCKS 'email' (System ID).
  */
 exports.updateProfile = async (req, res, next) => {
     try {
-        const { name, phone, email } = req.body;
-        
+        // 1. Destructure ONLY the fields allowed to be changed
+        // We strictly ignore 'req.body.email' here so it can never be overwritten.
+        const { name, phone, personalEmail } = req.body;
+
+        // 2. Validate Uniqueness (Optional but recommended)
+        // If the user is changing personalEmail, make sure no one else has it.
+        if (personalEmail) {
+            const emailExists = await User.findOne({ 
+                personalEmail: personalEmail, 
+                _id: { $ne: req.user.id } // Exclude current user
+            });
+            
+            if (emailExists) {
+                return res.status(400).json({ message: "This personal email is already in use." });
+            }
+        }
+
+        // 3. Update User
         const user = await User.findByIdAndUpdate(
           req.user.id,
-          { name, phone, email },
+          { 
+            name, 
+            phone, 
+            personalEmail // 🟢 Update this
+            // 🔴 'email' is intentionally missing here, so it remains untouched in DB
+          },
           { new: true, runValidators: true }
         ).select("-password");
     
+        if (!user) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        // 4. Return updated user (Frontend should update its state with this data)
         res.json({
           success: true,
           data: user,
           message: "Profile updated successfully"
         });
+
       } catch (err) {
+        // Handle MongoDB Duplicate Key Error (E11000) just in case
+        if (err.code === 11000) {
+            return res.status(400).json({ message: "Email or Phone already exists." });
+        }
         next(err);
       }
 };
