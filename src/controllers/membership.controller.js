@@ -19,7 +19,9 @@ exports.getAllMembers = async (req, res) => {
 
     // 2. Fetch memberships with User details
     // We fetch all fields from DB, but we will filter them below
-    const members = await Membership.find({ club: clubId })
+    const members = await Membership.find({ club: clubId,
+      isDeleted: { $ne: true }
+     })
       .populate("user", "name email phone personalEmail") 
       .sort({ joinedAt: -1 });
 
@@ -53,7 +55,7 @@ exports.getAllMembers = async (req, res) => {
 };
 /**
  * @route POST /api/v1/members
- * @desc Add a NEW Member (Supports System ID + Personal Email)
+ * @desc Add a NEW Member (Handles New Users + Restoring Soft Deleted Members)
  */
 exports.addMember = async (req, res) => {
   try {
@@ -68,6 +70,7 @@ exports.addMember = async (req, res) => {
       return res.status(400).json({ message: "Name and System Login ID are required" });
     }
 
+    // 1. Check or Create User
     let user = await User.findOne({ email });
 
     if (!user) {
@@ -85,16 +88,43 @@ exports.addMember = async (req, res) => {
       });
     }
 
+    // 2. Check for Existing Membership (Active OR Deleted)
     const existingMembership = await Membership.findOne({ user: user._id, club: clubId });
+
     if (existingMembership) {
+      // ✅ FIX: Check if they were previously removed (Soft Deleted)
+      if (existingMembership.isDeleted) {
+          // --- RESTORE LOGIC ---
+          existingMembership.isDeleted = false;
+          existingMembership.status = "active";
+          existingMembership.role = role || "member";
+          await existingMembership.save();
+
+          await logAction({
+              req,
+              action: "MEMBER_RESTORED",
+              target: `Member Re-joined: ${name}`,
+              details: { systemId: email, role }
+          });
+
+          return res.status(201).json({ 
+              success: true, 
+              message: "Member account restored successfully", 
+              data: existingMembership 
+          });
+      }
+
+      // If they exist and are NOT deleted, block duplicate
       return res.status(400).json({ message: "User is already a member" });
     }
 
+    // 3. Create NEW Membership (If never existed)
     const newMembership = await Membership.create({
       user: user._id,
       club: clubId,
       role: role || "member",
-      status: "active"
+      status: "active",
+      isDeleted: false // Explicitly set false
     });
 
     await logAction({
@@ -111,10 +141,9 @@ exports.addMember = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
-
 /**
  * @route DELETE /api/v1/members/:id
- * @desc Remove a member from the club (Delete Membership)
+ * @desc Remove a member from the club (Soft Delete)
  */
 exports.removeMember = async (req, res) => {
   try {
@@ -136,14 +165,25 @@ exports.removeMember = async (req, res) => {
 
     // 🛑 3. SAFETY CHECK: Prevent Removing Last Admin
     if (memberToDelete.role === "admin") {
-        const adminCount = await Membership.countDocuments({ club: clubId, role: "admin" });
+        // Count active admins only
+        const adminCount = await Membership.countDocuments({ 
+            club: clubId, 
+            role: "admin",
+            isDeleted: { $ne: true } // Ensure we don't count already deleted admins
+        });
+
         if (adminCount <= 1) {
             return res.status(400).json({ message: "Cannot remove the last admin. Promote another member first." });
         }
     }
 
-    // 4. Delete
-    await Membership.findByIdAndDelete(membershipId);
+    // ✅ 4. SOFT DELETE (The Fix)
+    // Instead of deleting the record, we mark it as deleted and inactive.
+    // This preserves the link for historical Archive reports.
+    await Membership.findByIdAndUpdate(membershipId, { 
+        isDeleted: true, 
+        status: 'inactive' 
+    });
 
     // 5. Log Action
     await logAction({
@@ -157,8 +197,9 @@ exports.removeMember = async (req, res) => {
     });
 
     res.json({ success: true, message: "Member removed from club" });
+
   } catch (err) {
-    console.error(err);
+    console.error("Remove Member Error:", err);
     res.status(500).json({ message: "Server error" });
   }
 };

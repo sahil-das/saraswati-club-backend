@@ -110,72 +110,15 @@ const seed = async () => {
         date: endDate
     });
 
-    // 4. MEMBER FEES (200 per member)
-    console.log("cx Seeding Member Fees...");
-    await MemberFee.deleteMany({ club: CLUB_ID, year: yearId });
-
-    const feeDocs = MEMBERS.map(m => ({
-        club: CLUB_ID,
-        year: yearId,
-        user: m.id,
-        amount: 200,
-        notes: "Saraswati Puja Fee",
-        collectedBy: ADMIN_ID,
-        paidAt: endDate
-    }));
-    await MemberFee.insertMany(feeDocs);
 
     // 5. SUBSCRIPTIONS (50 Weeks, 10 Rs/week, Fully Paid)
     console.log("Kg Seeding Subscriptions...");
     
-    // Generate the installments array ONCE
-    const fullPaidInstallments = [];
-    for(let i=1; i<=50; i++) {
-        fullPaidInstallments.push({
-            number: i,
-            amountExpected: 10,
-            isPaid: true,
-            paidDate: endDate,
-            collectedBy: ADMIN_ID
-        });
-    }
-    const totalPaid = 50 * 10; // 500
 
-    for (const member of MEMBERS) {
-        // ✅ FIXED: Now using the imported Membership model
-        const membership = await Membership.findOne({ user: member.id, club: CLUB_ID });
-        
-        if (!membership) {
-            console.error(`   ❌ Membership not found for ${member.name}. Skipping sub.`);
-            continue;
-        }
 
-        await Subscription.findOneAndUpdate(
-            { club: CLUB_ID, year: yearId, member: membership._id },
-            {
-                installments: fullPaidInstallments,
-                totalPaid: totalPaid,
-                totalDue: 0
-            },
-            { upsert: true, new: true }
-        );
-    }
-
-    // 6. CALCULATE & UPDATE CLOSING BALANCE
-    const totalDonations = 1366;
-    const totalFees = 200 * MEMBERS.length; // 2000
-    const totalSubs = 500 * MEMBERS.length; // 5000
-    const totalIncome = totalDonations + totalFees + totalSubs; // 8160
-    
-    const totalExpenses = 2700 + 1500 + 1500 + 850 + 1140 + 1435; // 9125
-
-    const closingBalance = openingBalance + totalIncome - totalExpenses; // 2305
 
     console.log("🧮 Financial Summary:");
-    console.log(`   Opening: ${openingBalance}`);
-    console.log(`   Income:  ${totalIncome}`);
-    console.log(`   Expense: ${totalExpenses}`);
-    console.log(`   Closing: ${closingBalance}`);
+
 
     yearDoc.closingBalance = closingBalance;
     await yearDoc.save();

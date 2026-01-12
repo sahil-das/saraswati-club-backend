@@ -15,7 +15,7 @@ const membershipSchema = new mongoose.Schema({
     enum: ["active", "inactive", "banned"], 
     default: "active" 
   },
-  
+  isDeleted: { type: Boolean, default: false },
   joinedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
