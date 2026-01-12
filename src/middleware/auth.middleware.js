@@ -2,6 +2,8 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const Membership = require("../models/Membership");
 const logger = require("../utils/logger");
+const mongoose = require("mongoose"); // ✅ Added for ObjectId validation
+
 const protect = async (req, res, next) => {
   let token;
 
@@ -21,7 +23,9 @@ const protect = async (req, res, next) => {
       // We look for the 'x-club-id' header sent by the frontend/Postman
       const headerClubId = req.headers['x-club-id'];
 
-      if (headerClubId) {
+      // ✅ FIX: Only process if it's a REAL, VALID ObjectId (Ignore "null", "undefined", etc.)
+      if (headerClubId && headerClubId !== "null" && headerClubId !== "undefined" && mongoose.isValidObjectId(headerClubId)) {
+        
         // Verify the user actually belongs to this club
         const membership = await Membership.findOne({ 
             user: user._id, 
@@ -33,7 +37,13 @@ const protect = async (req, res, next) => {
             // ✅ Attach context to req.user for Controllers to use
             req.user.clubId = headerClubId;
             req.user.role = membership.role; 
-        } else {
+        } 
+        // 🚀 BYPASS: If no membership, but user is Platform Admin, ALLOW access
+        else if (user.isPlatformAdmin) {
+            req.user.clubId = headerClubId;
+            req.user.role = "admin"; // Grant admin privileges for this request
+        }
+        else {
             // If they send a random Club ID they don't belong to
             return res.status(403).json({ message: "Access Denied: You are not a member of this club." });
         }
@@ -43,8 +53,8 @@ const protect = async (req, res, next) => {
     } catch (error) {
       logger.error("Auth Middleware Error", { 
         error: error.message,
-        // stack: error.stack, // Optional: Uncomment if you want full stack traces for auth errors
-        ip: req.ip,            // 👈 key for security tracking
+        // stack: error.stack, 
+        ip: req.ip,            
         path: req.originalUrl 
       });
       res.status(401).json({ message: "Not authorized, token failed" });

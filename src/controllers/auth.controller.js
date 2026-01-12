@@ -2,14 +2,15 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto"); 
-const { logAction } = require("../utils/auditLogger"); // 👈 Ensure this import exists
+const { logAction } = require("../utils/auditLogger"); 
 
 const User = require("../models/User");
 const Club = require("../models/Club");
 const Membership = require("../models/Membership");
 const RefreshToken = require("../models/RefreshToken");
 const logger = require("../utils/logger");
-/**c
+
+/**
  * 🛡️ HELPER: Generate Access & Refresh Tokens
  */
 const generateTokens = async (user, ipAddress) => {
@@ -37,7 +38,6 @@ const generateTokens = async (user, ipAddress) => {
 
 /**
  * REGISTER NEW FESTIVAL COMMITTEE
- * (Now using Transactions for Data Integrity)
  */
 exports.registerClub = async (req, res, next) => {
   let session;
@@ -147,7 +147,7 @@ exports.registerClub = async (req, res, next) => {
         await session.abortTransaction();
         session.endSession();
     }
-    next(err); // Pass to global error handler
+    next(err); 
   }
 };
 
@@ -165,7 +165,6 @@ exports.login = async (req, res, next) => {
     }).select("+password");
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
-      // 🛡️ Log failed attempt
       await logAction({ 
         req, 
         action: "LOGIN_FAILED", 
@@ -176,7 +175,11 @@ exports.login = async (req, res, next) => {
     }
 
     const memberships = await Membership.find({ user: user._id, status: "active" }).populate("club", "name code");
-    if (memberships.length === 0) return res.status(403).json({ message: "You are not a member of any club." });
+
+    // 🚀 FIX: IF USER HAS NO CLUBS, CHECK IF THEY ARE A PLATFORM ADMIN BEFORE BLOCKING
+    if (memberships.length === 0 && !user.isPlatformAdmin) {
+        return res.status(403).json({ message: "You are not a member of any club." });
+    }
 
     const { accessToken, refreshToken } = await generateTokens(user, req.ip);
 
@@ -186,7 +189,12 @@ exports.login = async (req, res, next) => {
       success: true,
       accessToken,
       refreshToken,
-      user: { id: user._id, name: user.name, email: user.email },
+      user: { 
+        id: user._id, 
+        name: user.name, 
+        email: user.email,
+        isPlatformAdmin: user.isPlatformAdmin // Send this flag to frontend
+      },
       clubs: memberships.map(m => ({
         clubId: m.club._id,
         clubName: m.club.name,
@@ -268,23 +276,35 @@ exports.revokeToken = async (req, res, next) => {
  */
 exports.getMe = async (req, res, next) => {
   try {
-    // req.user is populated by the protect middleware
-    const user = req.user;
+    const user = req.user; // Populated by middleware
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
+    const memberships = await Membership.find({ user: user._id, status: "active" })
+      .populate("club", "name code");
+
     const responseUser = {
       id: user._id,
       name: user.name,
+      phone: user.phone,
       email: user.email,
       personalEmail: user.personalEmail,
-      isPlatformAdmin: user.isPlatformAdmin,
-      role: user.role || "member", // Default to member if no club context
+      isPlatformAdmin: user.isPlatformAdmin, // Important for Frontend
+      role: user.role || "member",
     };
 
-    res.status(200).json({ success: true, user: responseUser });
+    res.status(200).json({ 
+      success: true, 
+      user: responseUser,
+      clubs: memberships.map(m => ({
+        clubId: m.club._id,
+        clubName: m.club.name,
+        clubCode: m.club.code,
+        role: m.role
+      }))
+    });
   } catch (err) {
     next(err);
   }
@@ -295,20 +315,39 @@ exports.getMe = async (req, res, next) => {
  */
 exports.updateProfile = async (req, res, next) => {
     try {
-        const { name, phone, email } = req.body;
-        
+        const { name, phone, personalEmail } = req.body;
+
+        if (personalEmail) {
+            const emailExists = await User.findOne({ 
+                personalEmail: personalEmail, 
+                _id: { $ne: req.user.id } 
+            });
+            
+            if (emailExists) {
+                return res.status(400).json({ message: "This personal email is already in use." });
+            }
+        }
+
         const user = await User.findByIdAndUpdate(
           req.user.id,
-          { name, phone, email },
+          { name, phone, personalEmail },
           { new: true, runValidators: true }
         ).select("-password");
     
+        if (!user) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
         res.json({
           success: true,
           data: user,
           message: "Profile updated successfully"
         });
+
       } catch (err) {
+        if (err.code === 11000) {
+            return res.status(400).json({ message: "Email or Phone already exists." });
+        }
         next(err);
       }
 };

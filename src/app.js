@@ -19,14 +19,14 @@ const financeRoutes = require("./routes/finance.routes");
 const archiveRoutes = require("./routes/archive.routes");
 const noticeRoutes = require("./routes/notice.routes");
 const healthRoutes = require("./routes/health.routes");
-const auditRoutes = require("./routes/audit.routes"); // 👈 Clean Import
+const auditRoutes = require("./routes/audit.routes"); 
+const platformRoutes = require("./routes/platform.routes"); // ✅ Platform Routes
 
 const app = express();
 
 /* ================= SECURITY & CONFIG ================= */
 
 // 1. CORS (MUST BE FIRST) 🚨
-// This ensures headers are present even if rate limits are hit or errors occur.
 const allowedOrigins = process.env.CORS_ORIGIN 
   ? process.env.CORS_ORIGIN.split(",") 
   : ["http://localhost:5173", "http://localhost:3000"];
@@ -41,7 +41,6 @@ app.use(
 app.use(compression());
 
 // 2. Set Security Headers
-// We enable Cross-Origin Resource Policy to allow frontend access to assets if needed
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
@@ -49,8 +48,10 @@ app.use(helmet({
 // 3. Rate Limiting (Global)
 app.use(globalLimiter);
 
-// 4. Body Parser (Limit to 10kb to prevent DoS)
-app.use(express.json({ limit: "10kb" }));
+// 4. Body Parsers (Limit to 10kb to prevent DoS)
+app.use(express.json({ limit: "10kb" })); 
+// 🚨 FIX: Add this line to prevent "req.body is undefined" errors
+app.use(express.urlencoded({ extended: true, limit: "10kb" })); 
 
 /* ================= DB ================= */
 connectDB();
@@ -71,6 +72,7 @@ app.use("/api/v1/audit", auditRoutes);
 app.use("/api/v1/archives", archiveRoutes);
 app.use("/api/v1/notices", noticeRoutes);
 app.use("/health", healthRoutes);
+app.use("/api/v1/platform", platformRoutes); // ✅ Platform Routes Mounted
 
 /* ================= ERROR HANDLING ================= */
 // Global Error Handler
@@ -87,12 +89,10 @@ app.use((err, req, res, next) => {
   
   const response = { message };
   
-  if (err.field) response.field = err.field; // Useful for form validation errors
+  if (err.field) response.field = err.field; 
   
-  // Only show detailed error stack in Development
   if (process.env.NODE_ENV === "development") {
       response.error = err.message;
-      // response.stack = err.stack; // Optional: include stack trace if needed
   }
   
   res.status(statusCode).json(response);

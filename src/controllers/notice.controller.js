@@ -75,3 +75,18 @@ exports.deleteNotice = async (req, res) => {
     res.status(500).json({ message: "Failed to delete" });
   }
 };
+// @desc    Fetch Active Global Broadcasts
+// @route   GET /api/v1/notices/global
+exports.getPublicGlobalNotices = async (req, res) => {
+  try {
+    // Fetch notices where club is NULL and (expiresAt is future OR undefined)
+    const notices = await Notice.find({
+      club: null,
+      $or: [{ expiresAt: { $gt: new Date() } }, { expiresAt: { $exists: false } }]
+    }).sort({ createdAt: -1 });
+
+    res.json({ success: true, data: notices });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};

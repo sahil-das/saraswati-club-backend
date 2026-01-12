@@ -2,7 +2,8 @@
 const mongoose = require("mongoose");
 
 const auditLogSchema = new mongoose.Schema({
-  club: { type: mongoose.Schema.Types.ObjectId, ref: "Club", required: true },
+  // 🔽 CHANGE: Remove 'required: true' to allow Platform/System logs
+  club: { type: mongoose.Schema.Types.ObjectId, ref: "Club" }, 
   actor: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   action: { type: String, required: true },
   target: { type: String },
@@ -12,10 +13,9 @@ const auditLogSchema = new mongoose.Schema({
 });
 
 // INDEXES
-// 1. Fast filtering by club (Dashboard)
-auditLogSchema.index({ club: 1, createdAt: -1 });
-
-// 2. TTL Index: Automatically delete logs older than 365 days
+auditLogSchema.index({ club: 1, createdAt: -1 }); // Fast filtering by club
+// 🔽 NEW INDEX: Fast filtering for Global/Platform Dashboard
+auditLogSchema.index({ createdAt: -1 }); 
 auditLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 31536000 });
 
 module.exports = mongoose.model("AuditLog", auditLogSchema);
