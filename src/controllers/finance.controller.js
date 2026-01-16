@@ -1,4 +1,4 @@
-const mongoose = require("mongoose"); // 👈 Required for ObjectId casting
+const mongoose = require("mongoose");
 const FestivalYear = require("../models/FestivalYear");
 const Subscription = require("../models/Subscription");
 const MemberFee = require("../models/MemberFee");
@@ -29,14 +29,12 @@ exports.getSummary = async (req, res) => {
 
     const yearId = activeYear._id;
 
-    // ⚠️ CRITICAL FIX: Convert String ID to ObjectId for Aggregation
     const baseMatch = { 
         club: new mongoose.Types.ObjectId(clubId), 
-        year: yearId // yearId is already an ObjectId from the doc above
+        year: yearId 
     };
 
     // 2. AGGREGATE: Subscriptions
-    // Note: Subscriptions are "hard transactions" and don't typically use isDeleted yet.
     const subscriptionStats = await Subscription.aggregate([
       { $match: baseMatch }, 
       { $unwind: "$installments" },
@@ -47,22 +45,18 @@ exports.getSummary = async (req, res) => {
 
     // 3. AGGREGATE: Member Fees
     const memberFeeStats = await MemberFee.aggregate([
-      { 
-        $match: { 
-          ...baseMatch, 
-          isDeleted: false // 👈 FILTER: Exclude deleted fees
-        } 
-      },
+      { $match: { ...baseMatch, isDeleted: false } },
       { $group: { _id: null, total: { $sum: "$amount" } } }
     ]);
     const totalMemberFeesInt = memberFeeStats[0]?.total || 0;
 
-    // 4. AGGREGATE: Donations
+    // 4. AGGREGATE: Donations (✅ FIXED)
     const donationStats = await Donation.aggregate([
       { 
         $match: { 
           ...baseMatch, 
-          isDeleted: false // 👈 FILTER: Exclude deleted donations
+          isDeleted: false,
+          type: { $ne: "item" } // 👈 EXCLUDE "Item" donations from Cash Total
         } 
       },
       { $group: { _id: null, total: { $sum: "$amount" } } }
@@ -75,15 +69,14 @@ exports.getSummary = async (req, res) => {
         $match: { 
           ...baseMatch, 
           status: "approved",
-          isDeleted: false // 👈 FILTER: Exclude deleted expenses
+          isDeleted: false 
         } 
       }, 
       { $group: { _id: null, total: { $sum: "$amount" } } }
     ]);
     const totalExpensesInt = expenseStats[0]?.total || 0;
 
-    // 6. Calculate Totals (All Math in Integers/Paisa)
-    // Use { getters: false } to get raw integer (e.g., 50000) instead of "500.00"
+    // 6. Calculate Totals
     const openingBalanceInt = activeYear.get('openingBalance', null, { getters: false }) || 0;
     
     const currentIncomeInt = totalSubscriptionsInt + totalMemberFeesInt + totalDonationsInt;
@@ -93,7 +86,6 @@ exports.getSummary = async (req, res) => {
       success: true,
       data: {
         yearName: activeYear.name,
-        // 7. Convert to Client Format (Rupees) at the very end
         openingBalance: toClient(openingBalanceInt),
         totalIncome: toClient(currentIncomeInt),
         totalExpense: toClient(totalExpensesInt),

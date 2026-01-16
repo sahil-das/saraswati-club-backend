@@ -19,5 +19,5 @@ router.post('/',
 
 router.put("/:id/status", authMiddleware, controller.updateStatus);
 router.delete('/:id', checkYearOpen, controller.deleteExpense);
-
+router.get('/categories', controller.getExpenseCategories);
 module.exports = router;

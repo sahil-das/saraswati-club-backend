@@ -46,11 +46,35 @@ exports.createYearSchema = Joi.object({
 // Add this to existing schemas
 exports.createDonationSchema = Joi.object({
   donorName: Joi.string().min(3).required(),
-  amount: Joi.number().positive().required(),
+  
+  // ✅ NEW: Type support
+  type: Joi.string().valid("cash", "online", "item").default("cash"),
+
+  // ✅ CONDITIONAL: Amount is required ONLY if type is NOT 'item'
+  amount: Joi.number().when('type', {
+    is: 'item',
+    then: Joi.optional(), // Can be 0 or missing for items
+    otherwise: Joi.number().positive().required() // Required for cash/online
+  }),
+
+  // ✅ NEW: Validation for Item Details
+  itemDetails: Joi.when('type', {
+    is: 'item',
+    then: Joi.object({
+      itemName: Joi.string().required(),
+      quantity: Joi.string().required(),
+      estimatedValue: Joi.number().optional()
+    }).required(),
+    otherwise: Joi.optional()
+  }),
+
   address: Joi.string().allow("").optional(),
-  phone: Joi.string().pattern(/^[0-9]+$/).optional(),
-  date: Joi.date().optional(),
-  receiptNo: Joi.string().optional()
+  
+  // ✅ FIX: .allow("") lets you send empty strings without error
+  phone: Joi.string().allow("").pattern(/^[0-9]+$/).optional(),
+  receiptNo: Joi.string().allow("").optional(),
+  
+  date: Joi.date().optional()
 });
 
 exports.createMemberFeeSchema = Joi.object({

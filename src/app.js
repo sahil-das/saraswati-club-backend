@@ -21,7 +21,9 @@ const noticeRoutes = require("./routes/notice.routes");
 const healthRoutes = require("./routes/health.routes");
 const auditRoutes = require("./routes/audit.routes"); 
 const platformRoutes = require("./routes/platform.routes"); // ✅ Platform Routes
-
+const budgetRoutes = require("./routes/budget.routes");
+const pollRoutes = require("./routes/poll.routes");
+const assetRoutes = require("./routes/asset.routes");
 const app = express();
 
 /* ================= SECURITY & CONFIG ================= */
@@ -73,7 +75,9 @@ app.use("/api/v1/archives", archiveRoutes);
 app.use("/api/v1/notices", noticeRoutes);
 app.use("/health", healthRoutes);
 app.use("/api/v1/platform", platformRoutes); // ✅ Platform Routes Mounted
-
+app.use("/api/v1/budget", budgetRoutes);   // Endpoints: /api/v1/budget/analysis
+app.use("/api/v1/polls", pollRoutes);      // Endpoints: /api/v1/polls/vote
+app.use("/api/v1/assets", assetRoutes);
 /* ================= ERROR HANDLING ================= */
 // Global Error Handler
 app.use((err, req, res, next) => {

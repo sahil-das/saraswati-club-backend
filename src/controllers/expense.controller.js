@@ -194,3 +194,25 @@ exports.deleteExpense = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+// ✅ NEW: Get Categories from Active Year Settings
+exports.getExpenseCategories = async (req, res) => {
+  try {
+    const { clubId } = req.user;
+
+    // Find Active Year
+    const activeYear = await FestivalYear.findOne({ club: clubId, isActive: true });
+    
+    // If no active year, return empty defaults
+    if (!activeYear) {
+        return res.json({ success: true, data: ["Miscellaneous"] });
+    }
+
+    // Return the list saved in Settings
+    res.json({ success: true, data: activeYear.expenseCategories.sort() });
+
+  } catch (err) {
+    console.error("Get Categories Error:", err);
+    res.status(500).json({ message: "Server Error" });
+  }
+};

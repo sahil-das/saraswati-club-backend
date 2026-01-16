@@ -277,7 +277,8 @@ exports.updateYear = async (req, res) => {
     const { clubId } = req.user;
     const { 
       name, startDate, endDate, 
-      subscriptionFrequency, totalInstallments, amountPerInstallment 
+      subscriptionFrequency, totalInstallments, amountPerInstallment,
+      expenseCategories // 👈 Capture this from request
     } = req.body;
 
     // 1. Fetch Existing Year
@@ -344,6 +345,11 @@ exports.updateYear = async (req, res) => {
     if (name) yearDoc.name = name;
     if (startDate) yearDoc.startDate = new Date(startDate);
     if (endDate) yearDoc.endDate = new Date(endDate);
+    
+    // ✅ Update Categories if provided
+    if (expenseCategories && Array.isArray(expenseCategories)) {
+        yearDoc.expenseCategories = expenseCategories;
+    }
     
     yearDoc.subscriptionFrequency = newFreq;
     yearDoc.totalInstallments = newTotal;
